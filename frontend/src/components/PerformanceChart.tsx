@@ -87,8 +87,8 @@ export default function PerformanceChart({ refreshKey }: Props) {
         titleColor: "#f1f5f9",
         bodyColor: "#94a3b8",
         callbacks: {
-          label: (ctx: { dataset: { label?: string }; parsed: { y: number } }) =>
-            ` ${ctx.dataset.label}: $${ctx.parsed.y.toLocaleString("en-US", { minimumFractionDigits: 2 })}`,
+          label: (ctx: { dataset: { label?: string }; parsed: { y: number | null } }) =>
+            ctx.parsed.y == null ? "" : ` ${ctx.dataset.label}: $${ctx.parsed.y.toLocaleString("en-US", { minimumFractionDigits: 2 })}`,
         },
       },
     },

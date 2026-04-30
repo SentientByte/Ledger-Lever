@@ -1,8 +1,6 @@
 services:
   backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    image: aajaas/ledger-lever-backend:latest
     container_name: ledger-lever-backend
     restart: unless-stopped
     environment:
@@ -19,9 +17,7 @@ services:
       - ledger-net
 
   frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
+    image: aajaas/ledger-lever-frontend:latest
     container_name: ledger-lever-frontend
     restart: unless-stopped
     ports:

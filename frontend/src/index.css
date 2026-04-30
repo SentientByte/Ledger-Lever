@@ -3,37 +3,60 @@
 @tailwind utilities;
 
 :root {
-  color-scheme: dark;
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
 }
 
 body {
-  background-color: #0f172a;
-  color: #f1f5f9;
-  font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+  background-color: #F5F0E8;
+  color: #1A1611;
+  font-family: "Inter", system-ui, sans-serif;
+  font-size: 13px;
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: #EDE5D6; }
+::-webkit-scrollbar-thumb { background: #C8BFB3; border-radius: 3px; }
+
+/* Section label helper */
+.section-label {
+  font-size: 0.6rem;
+  letter-spacing: 0.12em;
+  font-weight: 500;
+  text-transform: uppercase;
+  color: #9B9088;
+}
+
+/* Divider */
+.rule {
+  border: none;
+  border-top: 1px solid #D8CFBF;
   margin: 0;
 }
 
-/* Custom scrollbar */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-::-webkit-scrollbar-track {
-  background: #1e293b;
-}
-::-webkit-scrollbar-thumb {
-  background: #475569;
-  border-radius: 3px;
-}
+/* Positive / Negative */
+.pos { color: #1A5C3A; }
+.neg { color: #B81C1C; }
 
-/* Number flash animation on price update */
-@keyframes flash-green {
-  0%   { background-color: rgba(34, 197, 94, 0.25); }
+/* Sparkline bar */
+@keyframes flash-pos {
+  0%   { background-color: rgba(26, 92, 58, 0.18); }
   100% { background-color: transparent; }
 }
-@keyframes flash-red {
-  0%   { background-color: rgba(239, 68, 68, 0.25); }
+@keyframes flash-neg {
+  0%   { background-color: rgba(184, 28, 28, 0.18); }
   100% { background-color: transparent; }
 }
-.flash-green { animation: flash-green 0.8s ease-out; }
-.flash-red   { animation: flash-red   0.8s ease-out; }
+.flash-pos { animation: flash-pos 0.7s ease-out; }
+.flash-neg { animation: flash-neg 0.7s ease-out; }
+
+/* Mini sparkline */
+.sparkline-pos { stroke: #1A5C3A; }
+.sparkline-neg { stroke: #B81C1C; }

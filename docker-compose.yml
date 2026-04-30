@@ -1,5 +1,7 @@
 services:
   backend:
+    build:
+      context: ./backend
     image: aajaas/ledger-lever-backend:latest
     container_name: ledger-lever-backend
     restart: unless-stopped
@@ -17,6 +19,8 @@ services:
       - ledger-net
 
   frontend:
+    build:
+      context: ./frontend
     image: aajaas/ledger-lever-frontend:latest
     container_name: ledger-lever-frontend
     restart: unless-stopped

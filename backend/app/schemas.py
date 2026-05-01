@@ -68,6 +68,7 @@ class PortfolioPerformancePoint(BaseModel):
 class TransactionResponse(BaseModel):
     id: int
     symbol: str
+    listing_exchange: Optional[str]
     dt: datetime
     quantity: float
     price: float

@@ -47,6 +47,14 @@ _SAMPLE_TRANSACTIONS = [
 logging.basicConfig(level=logging.INFO)
 Base.metadata.create_all(bind=engine)
 
+# Migrate: add listing_exchange column if it doesn't exist yet
+from sqlalchemy import inspect as sa_inspect, text as sa_text
+with engine.connect() as _conn:
+    _cols = [c["name"] for c in sa_inspect(engine).get_columns("transactions")]
+    if "listing_exchange" not in _cols:
+        _conn.execute(sa_text("ALTER TABLE transactions ADD COLUMN listing_exchange VARCHAR"))
+        _conn.commit()
+
 app = FastAPI(title="Ledger Lever", version="1.0.0")
 
 app.add_middleware(
@@ -307,6 +315,9 @@ async def upload_transactions(file: UploadFile = File(...), db: Session = Depend
             qty = float(row.get("quantity", 0))
             price = float(row.get("price", 0))
             commission = float(row.get("commission", 0))
+            listing_exchange = (
+                row.get("listing_exchange", row.get("listingexchange", "")).strip() or None
+            )
 
             if not sym or not dt_raw or qty == 0 or price <= 0:
                 errors += 1
@@ -324,7 +335,7 @@ async def upload_transactions(file: UploadFile = File(...), db: Session = Depend
                 errors += 1
                 continue
 
-            _, dup = crud.create_transaction(db, sym, dt, qty, price, commission)
+            _, dup = crud.create_transaction(db, sym, dt, qty, price, commission, listing_exchange)
             if dup:
                 duplicates += 1
             else:
@@ -364,6 +375,11 @@ def derived_positions(db: Session = Depends(get_db)):
         return []
 
     symbols = list(positions.keys())
+    exchange_map = crud.get_symbol_exchange_map(txns)
+    fresh = get_current_prices(symbols, exchange_map)
+    for sym, data in fresh.items():
+        if data.get("price") is not None:
+            crud.save_price_snapshot(db, sym, data)
     latest = crud.get_latest_prices(db, symbols)
     total_mv = sum(
         (positions[s]["quantity"] * latest[s].price)
@@ -408,6 +424,11 @@ def transaction_summary(db: Session = Depends(get_db)):
     positions, realized, invested = crud.compute_fifo(txns)
 
     symbols = list(positions.keys())
+    exchange_map = crud.get_symbol_exchange_map(txns)
+    fresh = get_current_prices(symbols, exchange_map)
+    for sym, data in fresh.items():
+        if data.get("price") is not None:
+            crud.save_price_snapshot(db, sym, data)
     latest = crud.get_latest_prices(db, symbols)
     unrealized = 0.0
     for sym, pos in positions.items():

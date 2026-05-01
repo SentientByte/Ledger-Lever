@@ -75,15 +75,32 @@ def get_latest_prices(
     db: Session, symbols: List[str]
 ) -> Dict[str, models.PriceSnapshot]:
     result: Dict[str, models.PriceSnapshot] = {}
-    for symbol in symbols:
-        snap = (
-            db.query(models.PriceSnapshot)
-            .filter(models.PriceSnapshot.symbol == symbol.upper())
-            .order_by(desc(models.PriceSnapshot.timestamp))
-            .first()
+    if not symbols:
+        return result
+    # Batch query: get latest snapshot per symbol in two queries instead of N
+    from sqlalchemy import func
+    syms_upper = [s.upper() for s in symbols]
+    # Subquery: max timestamp per symbol
+    sub = (
+        db.query(
+            models.PriceSnapshot.symbol,
+            func.max(models.PriceSnapshot.timestamp).label("max_ts"),
         )
-        if snap:
-            result[symbol.upper()] = snap
+        .filter(models.PriceSnapshot.symbol.in_(syms_upper))
+        .group_by(models.PriceSnapshot.symbol)
+        .subquery()
+    )
+    rows = (
+        db.query(models.PriceSnapshot)
+        .join(
+            sub,
+            (models.PriceSnapshot.symbol == sub.c.symbol)
+            & (models.PriceSnapshot.timestamp == sub.c.max_ts),
+        )
+        .all()
+    )
+    for row in rows:
+        result[row.symbol] = row
     return result
 
 
@@ -190,7 +207,7 @@ def delete_all_transactions(db: Session) -> None:
 def compute_fifo(transactions: List[models.Transaction]):
     """
     Returns:
-      positions: dict symbol -> {quantity, avg_cost, cost_basis, first_lot_date, lots}
+      positions: dict symbol -> {quantity, avg_cost, cost_basis, first_lot_date}
       realized_pnl: float
       total_invested: float  (sum of all buy notionals + commissions)
     """
@@ -253,3 +270,84 @@ def get_year_activity(transactions: List[models.Transaction]) -> List[dict]:
         else:
             by_year[y]["sells"] += 1
     return sorted(by_year.values(), key=lambda x: x["year"])
+
+
+# ── Cache management ──────────────────────────────────────────────────────────
+
+def update_cache(
+    db: Session,
+    positions: dict,
+    realized_pnl: float,
+    total_invested: float,
+    fills: int,
+    last_fill: Optional[datetime],
+    exchange_map: Dict[str, str],
+) -> None:
+    """Replace cached FIFO positions and update aggregate metrics in one transaction."""
+    db.query(models.CachedPosition).delete()
+    for sym, pos in positions.items():
+        db.add(models.CachedPosition(
+            symbol=sym.upper(),
+            listing_exchange=exchange_map.get(sym.upper()),
+            quantity=pos["quantity"],
+            avg_cost=pos["avg_cost"],
+            cost_basis=pos["cost_basis"],
+            first_lot_date=pos["first_lot_date"],
+        ))
+
+    metrics = db.query(models.CachedMetrics).first()
+    if metrics is None:
+        metrics = models.CachedMetrics()
+        db.add(metrics)
+    metrics.fills = fills
+    metrics.realized_pnl = round(realized_pnl, 2)
+    metrics.total_invested = round(total_invested, 2)
+    metrics.active_positions = len(positions)
+    metrics.last_fill = last_fill
+    metrics.updated_at = datetime.utcnow()
+    db.commit()
+
+
+def get_cached_positions(db: Session) -> List[models.CachedPosition]:
+    return db.query(models.CachedPosition).all()
+
+
+def get_cached_metrics(db: Session) -> Optional[models.CachedMetrics]:
+    return db.query(models.CachedMetrics).first()
+
+
+def sync_positions_from_fifo(db: Session, fifo_positions: dict) -> None:
+    """Replace the positions table with FIFO-derived data so all pages reflect transactions."""
+    # Preserve any names already stored for these symbols
+    existing_names: Dict[str, str] = {
+        p.symbol.upper(): p.name
+        for p in db.query(models.Position).all()
+        if p.name
+    }
+    db.query(models.Position).delete()
+    for sym, pos in fifo_positions.items():
+        db.add(models.Position(
+            symbol=sym.upper(),
+            name=existing_names.get(sym.upper()),
+            shares=pos["quantity"],
+            avg_cost=pos["avg_cost"],
+        ))
+    db.commit()
+
+
+def clear_cache(db: Session) -> None:
+    db.query(models.CachedPosition).delete()
+    db.query(models.CachedMetrics).delete()
+    db.commit()
+
+
+def update_position_names(db: Session, names: Dict[str, str]) -> None:
+    """Update display names for positions that currently have no name."""
+    for symbol, name in names.items():
+        if not name or name == symbol:
+            continue
+        db.query(models.Position).filter(
+            models.Position.symbol == symbol.upper(),
+            models.Position.name.is_(None),
+        ).update({"name": name})
+    db.commit()

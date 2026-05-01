@@ -57,3 +57,30 @@ class Transaction(Base):
     __table_args__ = (
         UniqueConstraint("symbol", "dt", "quantity", "price", name="uq_transaction"),
     )
+
+
+class CachedPosition(Base):
+    """FIFO-computed positions from the transactions ledger, persisted to avoid recomputation."""
+    __tablename__ = "cached_positions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, unique=True, index=True, nullable=False)
+    listing_exchange = Column(String, nullable=True)
+    quantity = Column(Float, nullable=False)
+    avg_cost = Column(Float, nullable=False)
+    cost_basis = Column(Float, nullable=False)
+    first_lot_date = Column(DateTime, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
+class CachedMetrics(Base):
+    """Aggregate portfolio metrics derived from transactions, persisted to avoid recomputation."""
+    __tablename__ = "cached_metrics"
+
+    id = Column(Integer, primary_key=True)
+    fills = Column(Integer, nullable=False, default=0)
+    realized_pnl = Column(Float, nullable=False, default=0.0)
+    total_invested = Column(Float, nullable=False, default=0.0)
+    active_positions = Column(Integer, nullable=False, default=0)
+    last_fill = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow)

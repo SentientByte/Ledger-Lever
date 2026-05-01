@@ -9,7 +9,18 @@ import {
   Legend,
 } from "chart.js";
 import { Line } from "react-chartjs-2";
-import type { Position, PortfolioSummary, PerformancePoint } from "../types";
+import type {
+  Position,
+  PortfolioSummary,
+  PerformancePoint,
+  TransactionSummary,
+} from "../types";
+import {
+  dailyReturns,
+  maxDrawdownPct,
+  sharpeRatio,
+  annualizedVol,
+} from "../utils/stats";
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, Tooltip, Legend);
 
@@ -17,6 +28,7 @@ interface Props {
   summary: PortfolioSummary | null;
   positions: Position[];
   perfData: PerformancePoint[];
+  txnSummary: TransactionSummary | null;
   loading: boolean;
   onAddPosition: () => void;
 }
@@ -79,7 +91,14 @@ function MetricTile({
   );
 }
 
-export default function OverviewPage({ summary, positions, perfData, loading, onAddPosition }: Props) {
+export default function OverviewPage({
+  summary,
+  positions,
+  perfData,
+  txnSummary,
+  loading,
+  onAddPosition,
+}: Props) {
   /* ── Derived numbers from real data ──────────────────────── */
   const totalValue = summary?.total_value ?? 0;
   const totalCost = summary?.total_cost ?? 0;
@@ -87,6 +106,17 @@ export default function OverviewPage({ summary, positions, perfData, loading, on
   const totalGainPct = summary?.total_gain_pct ?? 0;
   const dayGain = summary?.day_gain ?? 0;
   const dayGainPct = summary?.day_gain_pct ?? 0;
+
+  // Realized & unrealized from transaction ledger
+  const realizedPnl = txnSummary?.realized ?? null;
+  const unrealizedPnl = txnSummary?.unrealized ?? totalGain;
+  const totalInvested = txnSummary?.invested ?? totalCost;
+
+  // Risk metrics from perfData
+  const rets = dailyReturns(perfData);
+  const maxDD = perfData.length >= 2 ? maxDrawdownPct(perfData) : null;
+  const sharpe = sharpeRatio(rets);
+  const volPct = annualizedVol(rets);
 
   // Top mover by abs day gain %
   const topMover = [...positions].sort(
@@ -114,10 +144,9 @@ export default function OverviewPage({ summary, positions, perfData, loading, on
     ? (((perfData[perfData.length - 1].total_value / perfData[0].total_value) - 1) * 100).toFixed(1)
     : "0.0";
 
-  // Allocation by category buckets (use real positions if available, otherwise show empty state)
+  // Allocation by category buckets
   const allocationBuckets = (() => {
     if (positions.length === 0) return [];
-    // Group by rough category based on known ETF names, or lump everything
     const colorMap: Record<string, string> = {
       "US Equity":   "#1A1611",
       "Intl Equity": "#3D5A8A",
@@ -125,7 +154,6 @@ export default function OverviewPage({ summary, positions, perfData, loading, on
       "Alts":        "#B8860B",
       "Cash":        "#C8BFB3",
     };
-    // Try to bucket by name keywords
     const buckets: Record<string, number> = {};
     for (const p of positions) {
       const n = (p.name ?? p.symbol).toLowerCase();
@@ -151,7 +179,6 @@ export default function OverviewPage({ summary, positions, perfData, loading, on
     .sort((a, b) => Math.abs(b.day_gain_pct ?? 0) - Math.abs(a.day_gain_pct ?? 0))
     .slice(0, 5);
 
-  // Sparkline data per mover: use last 20 perf points scaled (approximation)
   function mockSpark(seed: number, pos: boolean) {
     return Array.from({ length: 20 }, (_, i) => {
       const base = 100 + seed * 0.1;
@@ -173,7 +200,7 @@ export default function OverviewPage({ summary, positions, perfData, loading, on
         pointRadius: 0,
       },
       {
-        label: "60/40 Bench",
+        label: "60/40 Bench (est.)",
         data: bench6040,
         borderColor: "#6B6158",
         backgroundColor: "transparent",
@@ -183,7 +210,7 @@ export default function OverviewPage({ summary, positions, perfData, loading, on
         pointRadius: 0,
       },
       {
-        label: "SPY",
+        label: "SPY (est.)",
         data: benchSPY,
         borderColor: "#9B9088",
         backgroundColor: "transparent",
@@ -193,7 +220,7 @@ export default function OverviewPage({ summary, positions, perfData, loading, on
         pointRadius: 0,
       },
       {
-        label: "AGG",
+        label: "AGG (est.)",
         data: benchAGG,
         borderColor: "#B8860B",
         backgroundColor: "transparent",
@@ -258,6 +285,9 @@ export default function OverviewPage({ summary, positions, perfData, loading, on
     );
   }
 
+  const equityPct = allocationBuckets.find(b => b.name === "US Equity" || b.name === "Intl Equity")?.pct
+    ?? allocationBuckets.find(b => b.name.includes("Equity"))?.pct;
+
   return (
     <div className="max-w-[1200px] mx-auto px-8 pb-16">
       {/* ── Editorial header ─────────────────────────────────── */}
@@ -267,10 +297,9 @@ export default function OverviewPage({ summary, positions, perfData, loading, on
           <h1 className="font-serif text-6xl text-ink leading-tight mb-1">A steady hand,</h1>
           <h1 className="font-serif text-6xl text-ink italic leading-tight mb-5">compounding quietly.</h1>
           <p className="text-ink-3 text-sm leading-relaxed max-w-lg">
-            Twelve months in, the portfolio has out-earned a 60/40 sleeve by{" "}
-            {Math.abs(Math.round((totalGainPct - totalGainPct * 0.78) * 10)) || 47} bps with two-thirds the
-            drawdown. Defensive equity factors and intermediate Treasuries did the heavy lifting;
-            emerging markets remain the one position under review.
+            {txnSummary && txnSummary.fills > 0
+              ? `${txnSummary.fills} fills across ${txnSummary.active_positions} active position${txnSummary.active_positions !== 1 ? "s" : ""}. Total invested ${fmtK(txnSummary.invested)} · realized ${realizedPnl !== null && realizedPnl >= 0 ? "+" : ""}${realizedPnl !== null ? fmtK(realizedPnl) : "—"} · unrealized ${unrealizedPnl >= 0 ? "+" : ""}${fmtK(unrealizedPnl)}.`
+              : "Defensive equity factors and intermediate Treasuries did the heavy lifting; emerging markets remain the one position under review."}
           </p>
         </div>
 
@@ -293,15 +322,14 @@ export default function OverviewPage({ summary, positions, perfData, loading, on
             </div>
           </div>
 
-          {/* YTD return */}
+          {/* Total return */}
           <div>
-            <p className="section-label mb-1">Year-to-Date Return</p>
+            <p className="section-label mb-1">Total Return</p>
             <span className={`font-sans font-semibold text-3xl ${totalGainPct >= 0 ? "pos" : "neg"}`}>
               {sign(totalGainPct)}{fmt(totalGainPct)}%
             </span>
             <p className="text-ink-4 text-xs mt-0.5">
-              vs SPY {sign(totalGainPct * 0.73)}{fmt(Math.abs(totalGainPct * 0.73))}%
-              &nbsp;+{Math.abs(Math.round((totalGainPct - totalGainPct * 0.73) * 100))} bps
+              {sign(totalGain)}${fmt(Math.abs(totalGain))} on ${fmt(totalCost)} cost basis
             </p>
           </div>
         </div>
@@ -310,16 +338,16 @@ export default function OverviewPage({ summary, positions, perfData, loading, on
       {/* ── Metrics row 1 ──────────────────────────────────────── */}
       <div className="grid grid-cols-5 gap-0 py-2 border-b border-parchment-border">
         <MetricTile
-          label="Realized Profit · YTD"
-          value={`${sign(totalGain * 0.05)}$${fmt(Math.abs(totalGain * 0.05))}`}
-          sub="12 closes · LT 78%"
-          valueClass={totalGain >= 0 ? "pos" : "neg"}
+          label="Realized P&L · All-Time"
+          value={realizedPnl !== null ? `${sign(realizedPnl)}$${fmt(Math.abs(realizedPnl))}` : "—"}
+          sub={txnSummary?.fills ? `${txnSummary.fills} fills · FIFO` : "No transactions"}
+          valueClass={realizedPnl !== null ? (realizedPnl >= 0 ? "pos" : "neg") : "text-ink"}
         />
         <MetricTile
           label="Unrealized Profit"
-          value={`${sign(totalGain)}$${fmt(Math.abs(totalGain))}`}
+          value={`${sign(unrealizedPnl)}$${fmt(Math.abs(unrealizedPnl))}`}
           sub={`${sign(totalGainPct)}${fmt(Math.abs(totalGainPct))}% on open lots`}
-          valueClass={totalGain >= 0 ? "pos" : "neg"}
+          valueClass={unrealizedPnl >= 0 ? "pos" : "neg"}
         />
         <MetricTile
           label="Today's Gain"
@@ -334,9 +362,9 @@ export default function OverviewPage({ summary, positions, perfData, loading, on
           valueClass={(topMover?.day_gain_pct ?? 0) >= 0 ? "pos" : "neg"}
         />
         <MetricTile
-          label="Total Contributed"
-          value={`$${fmt(totalCost)}`}
-          sub="Cost basis total"
+          label="Total Invested"
+          value={`$${fmt(totalInvested)}`}
+          sub="Cost basis incl. commissions"
         />
       </div>
 
@@ -348,19 +376,27 @@ export default function OverviewPage({ summary, positions, perfData, loading, on
           sub={`${sign(totalGainPct)}${fmt(Math.abs(totalGainPct))}% on cost`}
           valueClass={totalGain >= 0 ? "pos" : "neg"}
         />
-        <MetricTile label="Sharpe (3Y)" value="1.18" sub="Bench 0.82" />
+        <MetricTile
+          label="Sharpe (ann.)"
+          value={sharpe !== null ? fmt(sharpe) : "—"}
+          sub={sharpe !== null ? "rf = 5% · from snapshots" : "Need ≥20 data points"}
+        />
         <MetricTile
           label="Max Drawdown"
-          value="-7.4%"
-          sub="vs SPY −18.2%"
-          valueClass="neg"
+          value={maxDD !== null ? `${fmt(maxDD, 1)}%` : "—"}
+          sub={maxDD !== null ? "Peak-to-trough" : "Need price history"}
+          valueClass={maxDD !== null && maxDD < 0 ? "neg" : "text-ink"}
         />
         <MetricTile
-          label="Yield (TTM)"
-          value="2.31%"
-          sub={`$${fmt(totalValue * 0.0231)} income`}
+          label="Ann. Volatility"
+          value={volPct !== null ? `${fmt(volPct, 1)}%` : "—"}
+          sub={volPct !== null ? "From price snapshots" : "Need ≥20 data points"}
         />
-        <MetricTile label="Expense Ratio" value="0.07%" sub="Wtd. average" />
+        <MetricTile
+          label="Active Positions"
+          value={txnSummary?.active_positions != null ? String(txnSummary.active_positions) : String(positions.length)}
+          sub={txnSummary?.last_fill ? `Last fill ${new Date(txnSummary.last_fill).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : "From transaction ledger"}
+        />
       </div>
 
       {/* ── §01 Performance chart ──────────────────────────────── */}
@@ -382,7 +418,7 @@ export default function OverviewPage({ summary, positions, perfData, loading, on
       {/* ── §02 Allocation ─────────────────────────────────────── */}
       <div className="grid grid-cols-5 gap-8 mt-0">
         <div className="col-span-3">
-          <SectionHeader num="02" title="Allocation" right="Drift < 1.4%" />
+          <SectionHeader num="02" title="Allocation" right="By market value" />
 
           {/* Horizontal stacked bar */}
           {allocationBuckets.length > 0 && (
@@ -435,22 +471,47 @@ export default function OverviewPage({ summary, positions, perfData, loading, on
                   {b.name} {b.pct.toFixed(1)}%
                 </span>
               ))}
-              <span className="section-label ml-auto">Target 55/38/4/3</span>
             </div>
           )}
         </div>
 
-        {/* §04 Defensive Posture */}
+        {/* §03 Portfolio Stats */}
         <div className="col-span-2">
-          <SectionHeader num="04" title="Defensive Posture" right="Snapshot" />
+          <SectionHeader num="03" title="Portfolio Stats" right="From ledger" />
           <div className="grid grid-cols-2 gap-px bg-parchment-border border border-parchment-border">
             {[
-              { label: "Beta to S&P", value: "0.74", sub: "low-26pct" },
-              { label: "Equity Sleeve Vol", value: "12.4%", sub: "3Y annualized" },
-              { label: "Bond Duration", value: "5.8 yr", sub: "Wtd. effective" },
-              { label: "Worst Month", value: "−3.1%", sub: "Oct 2025" },
-              { label: "Up Capture", value: "83%", sub: "vs SPY" },
-              { label: "Down Capture", value: "52%", sub: "vs SPY" },
+              {
+                label: "Total Invested",
+                value: fmtK(totalInvested),
+                sub: "incl. commissions",
+              },
+              {
+                label: "Realized P&L",
+                value: realizedPnl !== null ? `${sign(realizedPnl)}${fmtK(realizedPnl)}` : "—",
+                sub: "FIFO closed lots",
+              },
+              {
+                label: "Unrealized P&L",
+                value: `${sign(unrealizedPnl)}${fmtK(unrealizedPnl)}`,
+                sub: "open positions",
+              },
+              {
+                label: "Day's Gain",
+                value: `${sign(dayGain)}${fmtK(dayGain)}`,
+                sub: `${sign(dayGainPct)}${fmt(Math.abs(dayGainPct))}% vs prev close`,
+              },
+              {
+                label: "Positions",
+                value: String(txnSummary?.active_positions ?? positions.length),
+                sub: txnSummary?.last_fill
+                  ? `last fill ${new Date(txnSummary.last_fill).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`
+                  : "active",
+              },
+              {
+                label: "Total Fills",
+                value: txnSummary?.fills != null ? String(txnSummary.fills) : "—",
+                sub: "transaction ledger",
+              },
             ].map((item) => (
               <div key={item.label} className="bg-card-bg p-4">
                 <p className="section-label mb-1">{item.label}</p>
@@ -462,8 +523,8 @@ export default function OverviewPage({ summary, positions, perfData, loading, on
         </div>
       </div>
 
-      {/* ── §03 Today's Movers ─────────────────────────────────── */}
-      <SectionHeader num="03" title="Today's Movers" right="Sorted by Absolute ∆" />
+      {/* ── §04 Today's Movers ─────────────────────────────────── */}
+      <SectionHeader num="04" title="Today's Movers" right="Sorted by Absolute ∆" />
       <div className="border border-parchment-border rounded overflow-hidden">
         <table className="w-full">
           <thead>
@@ -522,7 +583,15 @@ export default function OverviewPage({ summary, positions, perfData, loading, on
             System Note · {new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })} ET
           </span>
           <p className="text-ink-3 text-xs leading-relaxed">
-            Equity allocation has drifted to {allocationBuckets.find(b => b.name === "US Equity" || b.name.includes("Equity"))?.pct.toFixed(1) ?? "55.5"}% (target 55%). A scheduled rebalance into BND is queued for next month — est. 38 bps of trade.
+            {equityPct != null
+              ? `Equity allocation at ${equityPct.toFixed(1)}%. `
+              : ""}
+            {realizedPnl !== null
+              ? `Realized P&L of ${sign(realizedPnl)}$${fmt(Math.abs(realizedPnl))} from closed lots (FIFO). `
+              : ""}
+            {maxDD !== null
+              ? `Max drawdown ${fmt(maxDD, 1)}% over tracked period.`
+              : "Price snapshot history building — metrics update every 60s."}
           </p>
         </div>
       </div>

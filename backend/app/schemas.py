@@ -63,3 +63,61 @@ class PortfolioPerformancePoint(BaseModel):
     timestamp: str
     total_value: float
     total_cost: float
+
+
+class TransactionResponse(BaseModel):
+    id: int
+    symbol: str
+    dt: datetime
+    quantity: float
+    price: float
+    commission: float
+    side: str
+    notional: float
+    net: float
+
+    model_config = {"from_attributes": True}
+
+
+class DerivedPosition(BaseModel):
+    symbol: str
+    quantity: float
+    avg_cost: float
+    cost_basis: float
+    current_price: Optional[float]
+    market_value: Optional[float]
+    unrealized: Optional[float]
+    unrealized_pct: Optional[float]
+    weight_pct: Optional[float]
+    first_lot_date: datetime
+
+
+class TransactionSummary(BaseModel):
+    fills: int
+    invested: float
+    realized: float
+    unrealized: Optional[float]
+    active_positions: int
+    last_fill: Optional[datetime]
+    filename: Optional[str]
+
+
+class TransactionUploadResult(BaseModel):
+    added: int
+    duplicates: int
+    errors: int
+    total_rows: int
+
+
+class YearActivity(BaseModel):
+    year: int
+    notional: float
+    buys: int
+    sells: int
+
+
+class TransactionPage(BaseModel):
+    items: list[TransactionResponse]
+    total: int
+    page: int
+    page_size: int

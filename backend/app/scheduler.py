@@ -15,13 +15,19 @@ def refresh_prices() -> None:
     db = SessionLocal()
     try:
         positions = crud.get_positions(db)
-        if not positions:
+        txns = crud.get_all_transactions_sorted(db)
+
+        pos_symbols = {p.symbol.upper() for p in positions}
+        exchange_map = crud.get_symbol_exchange_map(txns)
+        txn_symbols = set(exchange_map.keys())
+        symbols = list(pos_symbols | txn_symbols)
+
+        if not symbols:
             return
 
-        symbols = list({p.symbol.upper() for p in positions})
         logger.info("Refreshing prices for: %s", symbols)
 
-        prices = get_current_prices(symbols)
+        prices = get_current_prices(symbols, exchange_map)
 
         for symbol, data in prices.items():
             if data.get("price") is not None:

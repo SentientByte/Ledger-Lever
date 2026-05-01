@@ -113,7 +113,10 @@ def get_portfolio_performance(
 
 # ── Transactions ──────────────────────────────────────────────────────────────
 
-def _make_transaction(symbol: str, dt: datetime, quantity: float, price: float, commission: float) -> models.Transaction:
+def _make_transaction(
+    symbol: str, dt: datetime, quantity: float, price: float, commission: float,
+    listing_exchange: Optional[str] = None,
+) -> models.Transaction:
     side = "BUY" if quantity > 0 else "SELL"
     notional = round(abs(quantity) * price, 2)
     if side == "BUY":
@@ -122,6 +125,7 @@ def _make_transaction(symbol: str, dt: datetime, quantity: float, price: float, 
         net = round(notional - commission, 2)
     return models.Transaction(
         symbol=symbol.upper(),
+        listing_exchange=listing_exchange.upper() if listing_exchange else None,
         dt=dt,
         quantity=quantity,
         price=price,
@@ -133,10 +137,11 @@ def _make_transaction(symbol: str, dt: datetime, quantity: float, price: float, 
 
 
 def create_transaction(
-    db: Session, symbol: str, dt: datetime, quantity: float, price: float, commission: float
+    db: Session, symbol: str, dt: datetime, quantity: float, price: float, commission: float,
+    listing_exchange: Optional[str] = None,
 ) -> Tuple[Optional[models.Transaction], bool]:
     """Returns (transaction, was_duplicate)."""
-    obj = _make_transaction(symbol, dt, quantity, price, commission)
+    obj = _make_transaction(symbol, dt, quantity, price, commission, listing_exchange)
     try:
         db.add(obj)
         db.commit()
@@ -166,6 +171,15 @@ def get_transactions(
 
 def get_all_transactions_sorted(db: Session) -> List[models.Transaction]:
     return db.query(models.Transaction).order_by(asc(models.Transaction.dt)).all()
+
+
+def get_symbol_exchange_map(transactions: List[models.Transaction]) -> Dict[str, str]:
+    """Returns the most recently set listing_exchange per symbol."""
+    result: Dict[str, str] = {}
+    for txn in transactions:
+        if txn.listing_exchange:
+            result[txn.symbol.upper()] = txn.listing_exchange.upper()
+    return result
 
 
 def delete_all_transactions(db: Session) -> None:

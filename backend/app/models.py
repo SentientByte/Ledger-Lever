@@ -44,6 +44,7 @@ class Transaction(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     symbol = Column(String, index=True, nullable=False)
+    listing_exchange = Column(String, nullable=True)
     dt = Column(DateTime, nullable=False, index=True)
     quantity = Column(Float, nullable=False)   # positive = BUY, negative = SELL
     price = Column(Float, nullable=False)

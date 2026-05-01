@@ -54,6 +54,7 @@ export interface PositionUpdate {
 export interface Transaction {
   id: number;
   symbol: string;
+  listing_exchange: string | null;
   dt: string;
   quantity: number;
   price: number;

@@ -50,3 +50,59 @@ export interface PositionUpdate {
   shares?: number;
   avg_cost?: number;
 }
+
+export interface Transaction {
+  id: number;
+  symbol: string;
+  dt: string;
+  quantity: number;
+  price: number;
+  commission: number;
+  side: "BUY" | "SELL";
+  notional: number;
+  net: number;
+}
+
+export interface TransactionPage {
+  items: Transaction[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface DerivedPosition {
+  symbol: string;
+  quantity: number;
+  avg_cost: number;
+  cost_basis: number;
+  current_price: number | null;
+  market_value: number | null;
+  unrealized: number | null;
+  unrealized_pct: number | null;
+  weight_pct: number | null;
+  first_lot_date: string;
+}
+
+export interface TransactionSummary {
+  fills: number;
+  invested: number;
+  realized: number;
+  unrealized: number | null;
+  active_positions: number;
+  last_fill: string | null;
+  filename: string | null;
+}
+
+export interface TransactionUploadResult {
+  added: number;
+  duplicates: number;
+  errors: number;
+  total_rows: number;
+}
+
+export interface YearActivity {
+  year: number;
+  notional: number;
+  buys: number;
+  sells: number;
+}

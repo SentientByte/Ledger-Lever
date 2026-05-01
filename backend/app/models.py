@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, DateTime
+from sqlalchemy import Column, Integer, String, Float, DateTime, UniqueConstraint
 from .database import Base
 
 
@@ -37,3 +37,22 @@ class PortfolioSnapshot(Base):
     total_cost = Column(Float, nullable=False)
     day_gain = Column(Float)
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class Transaction(Base):
+    __tablename__ = "transactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, index=True, nullable=False)
+    dt = Column(DateTime, nullable=False, index=True)
+    quantity = Column(Float, nullable=False)   # positive = BUY, negative = SELL
+    price = Column(Float, nullable=False)
+    commission = Column(Float, nullable=False, default=0.0)
+    side = Column(String, nullable=False)       # "BUY" or "SELL"
+    notional = Column(Float, nullable=False)    # abs(quantity) * price
+    net = Column(Float, nullable=False)         # BUY: -(notional+commission), SELL: +(notional-commission)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "dt", "quantity", "price", name="uq_transaction"),
+    )

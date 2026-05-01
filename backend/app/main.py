@@ -1,6 +1,7 @@
 import csv
 import io
 import logging
+import threading
 from datetime import datetime
 from typing import List, Optional
 
@@ -9,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 from . import crud, models, schemas
-from .database import Base, engine, get_db
+from .database import Base, engine, get_db, SessionLocal
 from .scheduler import refresh_prices, start_scheduler, stop_scheduler
 from .yfinance_service import get_current_prices, get_price_history, validate_symbol
 
@@ -42,6 +43,15 @@ _SAMPLE_TRANSACTIONS = [
     ("VTI",  "2025-01-06 09:35:50",   90,  278.40, 1.00),
     ("VTI",  "2026-01-05 10:00:00",   60,  310.20, 1.00),
     ("VTI",  "2026-04-12 09:33:08",   32,  316.10, 1.00),
+]
+
+# Supported date formats for CSV import (order matters — try most specific first)
+_DATE_FORMATS = [
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%dT%H:%M:%S",
+    "%m/%d/%Y %H:%M:%S",
+    "%m/%d/%Y %H:%M",   # e.g. "3/12/2025 9:30" — IBKR activity export
+    "%m/%d/%Y",
 ]
 
 logging.basicConfig(level=logging.INFO)
@@ -279,6 +289,32 @@ def validate_ticker(symbol: str):
 
 # ── Transactions ──────────────────────────────────────────────────────────────
 
+def _parse_dt(raw: str) -> Optional[datetime]:
+    """Try each supported date format; return None if none match."""
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _sync_cache_and_positions(db: Session) -> None:
+    """Recompute FIFO from all transactions, persist cache + positions table."""
+    txns = crud.get_all_transactions_sorted(db)
+    if not txns:
+        return
+    positions_fifo, realized_pnl, total_invested = crud.compute_fifo(txns)
+    exchange_map = crud.get_symbol_exchange_map(txns)
+    last_fill = max(t.dt for t in txns)
+    crud.update_cache(
+        db, positions_fifo, realized_pnl, total_invested,
+        len(txns), last_fill, exchange_map,
+    )
+    if positions_fifo:
+        crud.sync_positions_from_fifo(db, positions_fifo)
+
+
 def _load_sample_transactions(db: Session) -> int:
     added = 0
     for row in _SAMPLE_TRANSACTIONS:
@@ -293,8 +329,13 @@ def _load_sample_transactions(db: Session) -> int:
 @app.post("/api/transactions/reset", response_model=schemas.TransactionUploadResult)
 def reset_transactions(db: Session = Depends(get_db)):
     crud.delete_all_transactions(db)
+    crud.clear_cache(db)
     added = _load_sample_transactions(db)
-    return schemas.TransactionUploadResult(added=added, duplicates=0, errors=0, total_rows=len(_SAMPLE_TRANSACTIONS))
+    _sync_cache_and_positions(db)
+    threading.Thread(target=refresh_prices, daemon=True).start()
+    return schemas.TransactionUploadResult(
+        added=added, duplicates=0, errors=0, total_rows=len(_SAMPLE_TRANSACTIONS)
+    )
 
 
 @app.post("/api/transactions/upload", response_model=schemas.TransactionUploadResult)
@@ -303,8 +344,11 @@ async def upload_transactions(file: UploadFile = File(...), db: Session = Depend
     text = contents.decode("utf-8-sig")  # handle BOM
     reader = csv.DictReader(io.StringIO(text))
 
-    # Normalise header names to lower-case, strip whitespace
-    reader.fieldnames = [f.strip().lower().replace("/", "_").replace(" ", "_") for f in (reader.fieldnames or [])]
+    # Normalise header names: lower-case, strip whitespace, unify separators
+    reader.fieldnames = [
+        f.strip().lower().replace("/", "_").replace(" ", "_")
+        for f in (reader.fieldnames or [])
+    ]
 
     added = duplicates = errors = total = 0
     for row in reader:
@@ -315,22 +359,20 @@ async def upload_transactions(file: UploadFile = File(...), db: Session = Depend
             qty = float(row.get("quantity", 0))
             price = float(row.get("price", 0))
             commission = float(row.get("commission", 0))
+
+            # Support IBKR column name variants: ListingExch / ListingExchange / Listing Exchange
             listing_exchange = (
-                row.get("listing_exchange", row.get("listingexchange", "")).strip() or None
-            )
+                row.get("listing_exchange")
+                or row.get("listingexchange")
+                or row.get("listingexch")
+                or ""
+            ).strip() or None
 
             if not sym or not dt_raw or qty == 0 or price <= 0:
                 errors += 1
                 continue
 
-            # Try multiple date formats
-            dt = None
-            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%m/%d/%Y %H:%M:%S", "%m/%d/%Y"):
-                try:
-                    dt = datetime.strptime(dt_raw, fmt)
-                    break
-                except ValueError:
-                    continue
+            dt = _parse_dt(dt_raw)
             if dt is None:
                 errors += 1
                 continue
@@ -343,7 +385,16 @@ async def upload_transactions(file: UploadFile = File(...), db: Session = Depend
         except Exception:
             errors += 1
 
-    return schemas.TransactionUploadResult(added=added, duplicates=duplicates, errors=errors, total_rows=total)
+    # Synchronously update FIFO cache + positions so the next API calls use fresh data
+    if added > 0:
+        _sync_cache_and_positions(db)
+
+    # Kick off a background price refresh for the new symbols
+    threading.Thread(target=refresh_prices, daemon=True).start()
+
+    return schemas.TransactionUploadResult(
+        added=added, duplicates=duplicates, errors=errors, total_rows=total
+    )
 
 
 @app.get("/api/transactions", response_model=schemas.TransactionPage)
@@ -366,46 +417,49 @@ def list_transaction_symbols(db: Session = Depends(get_db)):
 
 @app.get("/api/transactions/positions", response_model=List[schemas.DerivedPosition])
 def derived_positions(db: Session = Depends(get_db)):
-    txns = crud.get_all_transactions_sorted(db)
-    if not txns:
-        return []
+    cached = crud.get_cached_positions(db)
 
-    positions, _, _ = crud.compute_fifo(txns)
-    if not positions:
-        return []
+    # On first load (cache empty), compute and persist synchronously
+    if not cached:
+        txns = crud.get_all_transactions_sorted(db)
+        if not txns:
+            return []
+        _sync_cache_and_positions(db)
+        cached = crud.get_cached_positions(db)
+        if not cached:
+            return []
 
-    symbols = list(positions.keys())
-    exchange_map = crud.get_symbol_exchange_map(txns)
-    fresh = get_current_prices(symbols, exchange_map)
-    for sym, data in fresh.items():
-        if data.get("price") is not None:
-            crud.save_price_snapshot(db, sym, data)
+    symbols = [cp.symbol for cp in cached]
+    # Read prices from DB only — no live yfinance call (scheduler keeps them fresh)
     latest = crud.get_latest_prices(db, symbols)
+
     total_mv = sum(
-        (positions[s]["quantity"] * latest[s].price)
-        for s in symbols
-        if s in latest and latest[s].price
+        cp.quantity * latest[cp.symbol].price
+        for cp in cached
+        if cp.symbol in latest and latest[cp.symbol].price
     )
 
     result = []
-    for sym, pos in positions.items():
-        snap = latest.get(sym)
+    for cp in cached:
+        snap = latest.get(cp.symbol)
         price = snap.price if snap else None
-        mv = pos["quantity"] * price if price else None
-        unreal = (mv - pos["cost_basis"]) if mv is not None else None
-        unreal_pct = (unreal / pos["cost_basis"] * 100) if unreal is not None and pos["cost_basis"] else None
+        mv = cp.quantity * price if price is not None else None
+        unreal = (mv - cp.cost_basis) if mv is not None else None
+        unreal_pct = (
+            (unreal / cp.cost_basis * 100) if unreal is not None and cp.cost_basis else None
+        )
         wt = (mv / total_mv * 100) if mv and total_mv else None
         result.append(schemas.DerivedPosition(
-            symbol=sym,
-            quantity=pos["quantity"],
-            avg_cost=pos["avg_cost"],
-            cost_basis=pos["cost_basis"],
-            current_price=round(price, 4) if price else None,
-            market_value=round(mv, 2) if mv else None,
+            symbol=cp.symbol,
+            quantity=cp.quantity,
+            avg_cost=cp.avg_cost,
+            cost_basis=cp.cost_basis,
+            current_price=round(price, 4) if price is not None else None,
+            market_value=round(mv, 2) if mv is not None else None,
             unrealized=round(unreal, 2) if unreal is not None else None,
             unrealized_pct=round(unreal_pct, 2) if unreal_pct is not None else None,
             weight_pct=round(wt, 1) if wt is not None else None,
-            first_lot_date=pos["first_lot_date"],
+            first_lot_date=cp.first_lot_date,
         ))
 
     result.sort(key=lambda x: (x.cost_basis or 0), reverse=True)
@@ -414,37 +468,46 @@ def derived_positions(db: Session = Depends(get_db)):
 
 @app.get("/api/transactions/summary", response_model=schemas.TransactionSummary)
 def transaction_summary(db: Session = Depends(get_db)):
-    txns = crud.get_all_transactions_sorted(db)
-    if not txns:
+    metrics = crud.get_cached_metrics(db)
+
+    # Bootstrap cache on first load
+    if metrics is None or metrics.fills == 0:
+        txns = crud.get_all_transactions_sorted(db)
+        if not txns:
+            return schemas.TransactionSummary(
+                fills=0, invested=0, realized=0, unrealized=None,
+                active_positions=0, last_fill=None, filename=None,
+            )
+        _sync_cache_and_positions(db)
+        metrics = crud.get_cached_metrics(db)
+
+    if metrics is None:
         return schemas.TransactionSummary(
             fills=0, invested=0, realized=0, unrealized=None,
             active_positions=0, last_fill=None, filename=None,
         )
 
-    positions, realized, invested = crud.compute_fifo(txns)
-
-    symbols = list(positions.keys())
-    exchange_map = crud.get_symbol_exchange_map(txns)
-    fresh = get_current_prices(symbols, exchange_map)
-    for sym, data in fresh.items():
-        if data.get("price") is not None:
-            crud.save_price_snapshot(db, sym, data)
+    # Compute unrealized from cached positions + latest DB prices (no live yfinance)
+    cached_positions = crud.get_cached_positions(db)
+    symbols = [cp.symbol for cp in cached_positions]
     latest = crud.get_latest_prices(db, symbols)
-    unrealized = 0.0
-    for sym, pos in positions.items():
-        snap = latest.get(sym)
-        if snap and snap.price:
-            unrealized += pos["quantity"] * snap.price - pos["cost_basis"]
 
-    last_fill = max(t.dt for t in txns)
+    unrealized: Optional[float] = None
+    if cached_positions:
+        unrealized = 0.0
+        for cp in cached_positions:
+            snap = latest.get(cp.symbol)
+            if snap and snap.price:
+                unrealized += cp.quantity * snap.price - cp.cost_basis
+
     return schemas.TransactionSummary(
-        fills=len(txns),
-        invested=round(invested, 2),
-        realized=round(realized, 2),
-        unrealized=round(unrealized, 2),
-        active_positions=len(positions),
-        last_fill=last_fill,
-        filename="IBKR_sample_2017-2026.csv" if len(txns) == len(_SAMPLE_TRANSACTIONS) else None,
+        fills=metrics.fills,
+        invested=round(metrics.total_invested, 2),
+        realized=round(metrics.realized_pnl, 2),
+        unrealized=round(unrealized, 2) if unrealized is not None else None,
+        active_positions=metrics.active_positions,
+        last_fill=metrics.last_fill,
+        filename=None,
     )
 
 
@@ -457,4 +520,8 @@ def year_activity(db: Session = Depends(get_db)):
 @app.delete("/api/transactions")
 def clear_transactions(db: Session = Depends(get_db)):
     crud.delete_all_transactions(db)
+    crud.clear_cache(db)
+    # Remove FIFO-synced positions so the portfolio goes back to zero
+    db.query(models.Position).delete()
+    db.commit()
     return {"message": "cleared"}

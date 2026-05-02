@@ -1,8 +1,8 @@
 from collections import deque
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from datetime import datetime, timedelta, date as date_type
+from typing import Dict, List, Optional, Set, Tuple
 
-from sqlalchemy import desc, asc
+from sqlalchemy import desc, asc, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -338,6 +338,92 @@ def sync_positions_from_fifo(db: Session, fifo_positions: dict) -> None:
 def clear_cache(db: Session) -> None:
     db.query(models.CachedPosition).delete()
     db.query(models.CachedMetrics).delete()
+    db.commit()
+
+
+# ── Historical price bars ─────────────────────────────────────────────────────
+
+def save_historical_price_bars(db: Session, symbol: str, bars: List[dict]) -> int:
+    """Bulk-insert daily OHLCV bars using INSERT OR IGNORE to skip duplicates. Returns count inserted."""
+    if not bars:
+        return 0
+    sym_upper = symbol.upper()
+    rows = [
+        {
+            "symbol": sym_upper,
+            "date": bar["date"].isoformat() if hasattr(bar["date"], "isoformat") else str(bar["date"]),
+            "open": bar.get("open"),
+            "high": bar.get("high"),
+            "low": bar.get("low"),
+            "close": bar["close"],
+            "volume": bar.get("volume"),
+        }
+        for bar in bars
+    ]
+    db.execute(
+        text("""
+            INSERT OR IGNORE INTO historical_price_bars
+            (symbol, date, open, high, low, close, volume)
+            VALUES (:symbol, :date, :open, :high, :low, :close, :volume)
+        """),
+        rows,
+    )
+    db.commit()
+    return len(rows)
+
+
+def get_oldest_historical_bar_date(db: Session, symbol: str) -> Optional[date_type]:
+    """Return the oldest cached date for a symbol, or None if no data."""
+    from sqlalchemy import func
+    result = (
+        db.query(func.min(models.HistoricalPriceBar.date))
+        .filter(models.HistoricalPriceBar.symbol == symbol.upper())
+        .scalar()
+    )
+    if result is None:
+        return None
+    if isinstance(result, str):
+        return datetime.strptime(result, "%Y-%m-%d").date()
+    return result
+
+
+def get_historical_prices_for_symbol(
+    db: Session, symbol: str, start_date: date_type, end_date: date_type
+) -> List[models.HistoricalPriceBar]:
+    return (
+        db.query(models.HistoricalPriceBar)
+        .filter(
+            models.HistoricalPriceBar.symbol == symbol.upper(),
+            models.HistoricalPriceBar.date >= start_date,
+            models.HistoricalPriceBar.date <= end_date,
+        )
+        .order_by(models.HistoricalPriceBar.date)
+        .all()
+    )
+
+
+def get_existing_portfolio_snapshot_dates(db: Session, since: date_type) -> Set[date_type]:
+    """Return the set of calendar dates that already have a portfolio snapshot."""
+    since_dt = datetime(since.year, since.month, since.day)
+    rows = (
+        db.query(models.PortfolioSnapshot.timestamp)
+        .filter(models.PortfolioSnapshot.timestamp >= since_dt)
+        .all()
+    )
+    return {row[0].date() for row in rows}
+
+
+def bulk_save_portfolio_snapshots(
+    db: Session, snapshots: List[Tuple[float, float, float, datetime]]
+) -> None:
+    """Insert a batch of (total_value, total_cost, day_gain, timestamp) portfolio snapshots."""
+    for total_value, total_cost, day_gain, ts in snapshots:
+        db.add(models.PortfolioSnapshot(
+            total_value=total_value,
+            total_cost=total_cost,
+            day_gain=day_gain,
+            timestamp=ts,
+        ))
     db.commit()
 
 

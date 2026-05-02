@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from . import crud, models, schemas
 from .database import Base, engine, get_db, SessionLocal
-from .scheduler import refresh_prices, start_scheduler, stop_scheduler
+from .scheduler import refresh_prices, start_scheduler, stop_scheduler, backfill_historical_data
 from .yfinance_service import get_current_prices, get_price_history, validate_symbol
 
 # 27-fill sample dataset (Symbol, Date/Time, Quantity, Price, Commission)
@@ -259,22 +259,37 @@ def symbol_history(symbol: str, period: str = "3mo"):
 @app.get("/api/portfolio/performance")
 def portfolio_performance(days: int = 30, db: Session = Depends(get_db)):
     snaps = crud.get_portfolio_performance(db, days)
+    # Aggregate to one data point per calendar day (last snapshot of each day).
+    # This ensures clean daily returns whether data comes from the live 60-s
+    # scheduler or the historical backfill.
+    by_date: dict = {}
+    for s in snaps:
+        day = s.timestamp.date()
+        if day not in by_date or s.timestamp > by_date[day].timestamp:
+            by_date[day] = s
     return [
         {
             "timestamp": s.timestamp.isoformat(),
             "total_value": round(s.total_value, 2),
             "total_cost": round(s.total_cost, 2),
         }
-        for s in snaps
+        for s in sorted(by_date.values(), key=lambda x: x.timestamp)
     ]
 
 
-# ── Manual refresh ────────────────────────────────────────────────────────────
+# ── Manual refresh & backfill ─────────────────────────────────────────────────
 
 @app.post("/api/portfolio/refresh")
 def manual_refresh():
     refresh_prices()
     return {"message": "prices refreshed"}
+
+
+@app.post("/api/portfolio/backfill")
+def trigger_backfill():
+    """Manually trigger a historical data backfill in the background."""
+    threading.Thread(target=backfill_historical_data, daemon=True, name="hist-backfill-manual").start()
+    return {"message": "historical backfill started in background"}
 
 
 # ── Symbol validation ─────────────────────────────────────────────────────────
@@ -333,6 +348,7 @@ def reset_transactions(db: Session = Depends(get_db)):
     added = _load_sample_transactions(db)
     _sync_cache_and_positions(db)
     threading.Thread(target=refresh_prices, daemon=True).start()
+    threading.Thread(target=backfill_historical_data, daemon=True, name="hist-backfill-reset").start()
     return schemas.TransactionUploadResult(
         added=added, duplicates=0, errors=0, total_rows=len(_SAMPLE_TRANSACTIONS)
     )
@@ -389,8 +405,10 @@ async def upload_transactions(file: UploadFile = File(...), db: Session = Depend
     if added > 0:
         _sync_cache_and_positions(db)
 
-    # Kick off a background price refresh for the new symbols
+    # Kick off background price refresh + historical backfill for any new symbols
     threading.Thread(target=refresh_prices, daemon=True).start()
+    if added > 0:
+        threading.Thread(target=backfill_historical_data, daemon=True, name="hist-backfill-upload").start()
 
     return schemas.TransactionUploadResult(
         added=added, duplicates=duplicates, errors=errors, total_rows=total

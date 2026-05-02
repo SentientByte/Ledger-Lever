@@ -5,6 +5,7 @@ import HoldingsPage from "./pages/HoldingsPage";
 import RiskPage from "./pages/RiskPage";
 import PerformancePage from "./pages/PerformancePage";
 import PlaceholderPage from "./pages/PlaceholderPage";
+import DocumentsPage from "./pages/DocumentsPage";
 import TransactionsPage from "./pages/TransactionsPage";
 import AddPositionModal from "./components/AddPositionModal";
 import {
@@ -43,7 +44,7 @@ export default function App() {
       const [s, p, perf, ts, dp] = await Promise.all([
         getSummary(),
         getPositions(),
-        getPerformance(365),
+        getPerformance(730),
         getTransactionSummary().catch(() => null),
         getDerivedPositions().catch(() => [] as DerivedPosition[]),
       ]);
@@ -112,7 +113,7 @@ export default function App() {
         {activeTab === "PERFORMANCE" && <PerformancePage {...commonProps} />}
         {activeTab === "TRANSACTIONS" && <TransactionsPage />}
         {activeTab === "INCOME" && <PlaceholderPage title="Income" subtitle="Distribution income register coming soon." />}
-        {activeTab === "DOCUMENTS" && <PlaceholderPage title="Documents" subtitle="Document vault coming soon." />}
+        {activeTab === "DOCUMENTS" && <DocumentsPage />}
       </main>
 
       {modalOpen && (

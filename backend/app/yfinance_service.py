@@ -157,6 +157,42 @@ def get_price_history(
         return []
 
 
+def get_historical_daily_prices(
+    symbol: str,
+    start_date,
+    listing_exchange: Optional[str] = None,
+) -> List[dict]:
+    """
+    Fetch daily OHLCV bars from yfinance for a 2-year historical backfill.
+    Returns a list of dicts with keys: date, open, high, low, close, volume.
+    """
+    from datetime import date as date_type, datetime as dt_type
+    yf_ticker = get_yf_ticker(symbol, listing_exchange)
+    try:
+        if hasattr(start_date, "isoformat"):
+            start_str = start_date.isoformat()
+        else:
+            start_str = str(start_date)
+        hist = yf.Ticker(yf_ticker).history(start=start_str, auto_adjust=True)
+        if hist.empty:
+            return []
+        bars = []
+        for idx, row in hist.iterrows():
+            bar_date = idx.date() if hasattr(idx, "date") else idx
+            bars.append({
+                "date": bar_date,
+                "open": round(float(row["Open"]), 6) if row["Open"] else None,
+                "high": round(float(row["High"]), 6) if row["High"] else None,
+                "low": round(float(row["Low"]), 6) if row["Low"] else None,
+                "close": round(float(row["Close"]), 6),
+                "volume": float(row["Volume"]) if row["Volume"] else None,
+            })
+        return bars
+    except Exception as exc:
+        logger.error("Historical daily fetch error for %s (%s): %s", symbol, yf_ticker, exc)
+        return []
+
+
 def validate_symbol(symbol: str, listing_exchange: Optional[str] = None) -> Optional[dict]:
     yf_ticker = get_yf_ticker(symbol, listing_exchange)
     try:

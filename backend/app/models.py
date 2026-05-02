@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, DateTime, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Float, DateTime, Date, UniqueConstraint
 from .database import Base
 
 
@@ -71,6 +71,24 @@ class CachedPosition(Base):
     cost_basis = Column(Float, nullable=False)
     first_lot_date = Column(DateTime, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow)
+
+
+class HistoricalPriceBar(Base):
+    """Daily OHLCV bars fetched from yfinance and cached to avoid repeated API calls."""
+    __tablename__ = "historical_price_bars"
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, nullable=False, index=True)
+    date = Column(Date, nullable=False, index=True)
+    open = Column(Float)
+    high = Column(Float)
+    low = Column(Float)
+    close = Column(Float, nullable=False)
+    volume = Column(Float)
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "date", name="uq_hist_price_bar"),
+    )
 
 
 class CachedMetrics(Base):

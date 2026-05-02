@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { Plus, Pencil, Trash2, ChevronUp, ChevronDown, ChevronsUpDown } from "lucide-react";
 import { deletePosition } from "../api/portfolio";
-import type { Position, PortfolioSummary } from "../types";
+import type { Position, PortfolioSummary, DerivedPosition } from "../types";
 
 interface Props {
   summary: PortfolioSummary | null;
   positions: Position[];
+  derivedPositions: DerivedPosition[];
   loading: boolean;
   onAddPosition: () => void;
   onEditPosition: (p: Position) => void;
@@ -58,7 +59,19 @@ function DriftBar({ wt, target }: { wt: number; target: number }) {
   );
 }
 
-export default function HoldingsPage({ summary, positions, loading, onAddPosition, onEditPosition, onDeleted }: Props) {
+export default function HoldingsPage({
+  summary,
+  positions,
+  derivedPositions,
+  loading,
+  onAddPosition,
+  onEditPosition,
+  onDeleted,
+}: Props) {
+  // Build a lookup from symbol → DerivedPosition for FIFO lot data
+  const derivedBySymbol = Object.fromEntries(
+    derivedPositions.map((dp) => [dp.symbol.toUpperCase(), dp])
+  );
   const [sortKey, setSortKey] = useState<SortKey>("symbol");
   const [sortDir, setSortDir] = useState<Dir>("asc");
   const [deleting, setDeleting] = useState<number | null>(null);
@@ -140,17 +153,27 @@ export default function HoldingsPage({ summary, positions, loading, onAddPositio
     "Cash · T-Bill": "#9B9088",
   };
 
-  // Tax lots: show top unrealized P/L rows
+  // Tax lots: show top unrealized P/L rows, using FIFO first_lot_date when available
   const taxLots = [...positions]
-    .filter((p) => p.total_gain != null)
-    .sort((a, b) => Math.abs(b.total_gain ?? 0) - Math.abs(a.total_gain ?? 0))
+    .filter((p) => p.total_gain != null || derivedBySymbol[p.symbol.toUpperCase()])
+    .sort((a, b) => {
+      const aUnreal = derivedBySymbol[a.symbol.toUpperCase()]?.unrealized ?? a.total_gain ?? 0;
+      const bUnreal = derivedBySymbol[b.symbol.toUpperCase()]?.unrealized ?? b.total_gain ?? 0;
+      return Math.abs(bUnreal) - Math.abs(aUnreal);
+    })
     .slice(0, 4)
     .map((p) => {
-      const acquired = new Date(p.created_at);
+      const dp = derivedBySymbol[p.symbol.toUpperCase()];
+      // Use FIFO first_lot_date if available, otherwise fall back to created_at
+      const acquired = dp?.first_lot_date
+        ? new Date(dp.first_lot_date)
+        : new Date(p.created_at);
       const now = new Date();
       const months = (now.getTime() - acquired.getTime()) / (1000 * 60 * 60 * 24 * 30);
       const term = months > 12 ? "LT" : "ST";
-      return { ...p, term, acquired };
+      const unrealizedPnl = dp?.unrealized ?? p.total_gain;
+      const costBasis = dp?.cost_basis ?? p.cost_basis;
+      return { ...p, term, acquired, unrealizedPnl, costBasis };
     });
 
   if (loading) {
@@ -349,16 +372,16 @@ export default function HoldingsPage({ summary, positions, loading, onAddPositio
                   <tr><td colSpan={6} className="px-3 py-4 text-center text-ink-4 text-xs">No data</td></tr>
                 ) : (
                   taxLots.map((p) => {
-                    const pos = (p.total_gain ?? 0) >= 0;
+                    const pos = (p.unrealizedPnl ?? 0) >= 0;
                     return (
                       <tr key={p.id} className="border-b border-parchment-border last:border-b-0">
                         <td className="px-3 py-2.5 font-mono font-medium text-xs text-ink">{p.symbol}</td>
                         <td className="px-3 py-2.5 text-xs text-ink-3">
-                          {p.acquired.toLocaleDateString("en-US", { month: "short", year: "numeric" })}
+                          {p.acquired.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
                         </td>
-                        <td className="px-3 py-2.5 text-xs text-ink">${fmt(p.cost_basis)}</td>
+                        <td className="px-3 py-2.5 text-xs text-ink">${fmt(p.costBasis)}</td>
                         <td className={`px-3 py-2.5 text-xs font-medium ${pos ? "pos" : "neg"}`}>
-                          {p.total_gain != null ? `${sign(p.total_gain)}$${fmt(Math.abs(p.total_gain))}` : "—"}
+                          {p.unrealizedPnl != null ? `${sign(p.unrealizedPnl)}$${fmt(Math.abs(p.unrealizedPnl))}` : "—"}
                         </td>
                         <td className="px-3 py-2.5">
                           <span className={`text-2xs px-1.5 py-0.5 rounded font-medium ${p.term === "LT" ? "bg-parchment-dark text-ink-3" : "bg-parchment-dark text-ink-2"}`}>

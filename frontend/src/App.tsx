@@ -7,8 +7,21 @@ import PerformancePage from "./pages/PerformancePage";
 import PlaceholderPage from "./pages/PlaceholderPage";
 import TransactionsPage from "./pages/TransactionsPage";
 import AddPositionModal from "./components/AddPositionModal";
-import { getPositions, getSummary, getPerformance, manualRefresh } from "./api/portfolio";
-import type { Position, PortfolioSummary, PerformancePoint } from "./types";
+import {
+  getPositions,
+  getSummary,
+  getPerformance,
+  manualRefresh,
+  getTransactionSummary,
+  getDerivedPositions,
+} from "./api/portfolio";
+import type {
+  Position,
+  PortfolioSummary,
+  PerformancePoint,
+  TransactionSummary,
+  DerivedPosition,
+} from "./types";
 
 const REFRESH_INTERVAL = 60;
 
@@ -17,6 +30,8 @@ export default function App() {
   const [summary, setSummary] = useState<PortfolioSummary | null>(null);
   const [positions, setPositions] = useState<Position[]>([]);
   const [perfData, setPerfData] = useState<PerformancePoint[]>([]);
+  const [txnSummary, setTxnSummary] = useState<TransactionSummary | null>(null);
+  const [derivedPositions, setDerivedPositions] = useState<DerivedPosition[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
@@ -25,14 +40,18 @@ export default function App() {
   const fetchAll = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
     try {
-      const [s, p, perf] = await Promise.all([
+      const [s, p, perf, ts, dp] = await Promise.all([
         getSummary(),
         getPositions(),
         getPerformance(365),
+        getTransactionSummary().catch(() => null),
+        getDerivedPositions().catch(() => [] as DerivedPosition[]),
       ]);
       setSummary(s);
       setPositions(p);
       setPerfData(perf);
+      setTxnSummary(ts);
+      setDerivedPositions(dp);
     } finally {
       if (!quiet) setLoading(false);
     }
@@ -68,6 +87,8 @@ export default function App() {
     summary,
     positions,
     perfData,
+    txnSummary,
+    derivedPositions,
     loading,
     refreshing,
     onRefresh: handleManualRefresh,

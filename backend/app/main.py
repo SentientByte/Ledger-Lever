@@ -292,6 +292,40 @@ def trigger_backfill():
     return {"message": "historical backfill started in background"}
 
 
+@app.get("/api/prices/bars")
+def get_price_bars(symbols: str = Query(...), period: str = "2y", db: Session = Depends(get_db)):
+    """Return daily close prices for multiple comma-separated symbols.
+
+    Served from the cached HistoricalPriceBar table; missing data is fetched
+    from yfinance on-demand and then cached for subsequent requests.
+    """
+    from datetime import timedelta
+    sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    if not sym_list:
+        return {}
+
+    now = datetime.utcnow().date()
+    if period.endswith("y"):
+        start_date = (datetime.utcnow() - timedelta(days=int(period[:-1]) * 365)).date()
+    elif period.endswith("mo"):
+        start_date = (datetime.utcnow() - timedelta(days=int(period[:-2]) * 30)).date()
+    else:
+        start_date = (datetime.utcnow() - timedelta(days=730)).date()
+
+    result = {}
+    for sym in sym_list:
+        bars = crud.get_historical_prices_for_symbol(db, sym, start_date, now)
+        if not bars:
+            from .yfinance_service import get_historical_daily_prices
+            raw = get_historical_daily_prices(sym, start_date)
+            if raw:
+                crud.save_historical_price_bars(db, sym, raw)
+                bars = crud.get_historical_prices_for_symbol(db, sym, start_date, now)
+        result[sym] = [{"date": bar.date.isoformat(), "close": float(bar.close)} for bar in bars]
+
+    return result
+
+
 # ── Symbol validation ─────────────────────────────────────────────────────────
 
 @app.get("/api/validate/{symbol}")

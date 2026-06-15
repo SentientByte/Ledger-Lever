@@ -11,7 +11,7 @@ import {
   Legend,
 } from "chart.js";
 import { Line, Bar } from "react-chartjs-2";
-import type { Position, PortfolioSummary, PerformancePoint } from "../types";
+import type { Position, PortfolioSummary, PerformancePoint, BarsResult } from "../types";
 import {
   dailyReturns,
   maxDrawdownPct,
@@ -22,6 +22,10 @@ import {
   historicalCVaR,
   annualizedVol,
   annualizedReturnPct,
+  barsToReturns,
+  barVol,
+  corrCoef,
+  alignBarsReturns,
 } from "../utils/stats";
 
 ChartJS.register(
@@ -39,6 +43,7 @@ interface Props {
   summary: PortfolioSummary | null;
   positions: Position[];
   perfData: PerformancePoint[];
+  barsData: BarsResult;
   loading: boolean;
 }
 
@@ -81,42 +86,11 @@ function toDrawdown(data: PerformancePoint[]) {
   });
 }
 
-// Static per-symbol annualized volatility estimates (source: long-run averages)
-const SYMBOL_VOL: Record<string, number> = {
-  VTI: 17.2,
-  IXUS: 16.1,
-  IEMG: 22.0,
-  BND: 5.8,
-  IEF: 8.5,
-  SCHP: 7.2,
-  USMV: 12.8,
-  IAU: 15.4,
-  SGOV: 0.5,
+// Fallback long-run volatility estimates when bar data is insufficient
+const SYMBOL_VOL_FALLBACK: Record<string, number> = {
+  VTI: 17.2, IXUS: 16.1, IEMG: 22.0, BND: 5.8, IEF: 8.5,
+  SCHP: 7.2, USMV: 12.8, IAU: 15.4, SGOV: 0.5,
 };
-
-// Static correlation matrix for the known ETF universe
-const TICKERS_STATIC = [
-  "VTI",
-  "IXUS",
-  "IEMG",
-  "BND",
-  "IEF",
-  "SCHP",
-  "USMV",
-  "IAU",
-  "SGOV",
-];
-const CORR: number[][] = [
-  [1.0, 0.84, 0.78, -0.12, -0.18, -0.04, 0.91, 0.08, 0.01],
-  [0.84, 1.0, 0.86, -0.08, -0.14, -0.02, 0.78, 0.14, 0.02],
-  [0.78, 0.86, 1.0, -0.04, -0.1, 0.02, 0.71, 0.21, 0.01],
-  [-0.12, -0.08, -0.04, 1.0, 0.91, 0.74, -0.1, 0.18, 0.12],
-  [-0.18, -0.14, -0.1, 0.91, 1.0, 0.71, -0.16, 0.22, 0.16],
-  [-0.04, -0.02, 0.02, 0.74, 0.71, 1.0, -0.06, 0.34, 0.18],
-  [0.91, 0.78, 0.71, -0.1, -0.16, -0.06, 1.0, 0.12, 0.02],
-  [0.08, 0.14, 0.21, 0.18, 0.22, 0.34, 0.12, 1.0, 0.04],
-  [0.01, 0.02, 0.01, 0.12, 0.16, 0.18, 0.02, 0.04, 1.0],
-];
 
 function corrColor(v: number) {
   if (v >= 0.7) return "#1A1611";
@@ -138,58 +112,57 @@ const FACTORS = [
   { name: "Inflation (BEI)", value: 0.18, note: "TIPS hedge", dir: 1 },
 ];
 
-const STRESS = [
-  {
-    scenario: "2008 Financial Crisis",
-    period: "Oct 07 – Mar 09",
-    portfolio: -22.4,
-    bench6040: -36.8,
-    spy: -56.8,
-  },
-  {
-    scenario: "2020 Covid Crash",
-    period: "Feb 20 – Mar 20",
-    portfolio: -8.6,
-    bench6040: -14.2,
-    spy: -33.9,
-  },
-  {
-    scenario: "2022 Rate Shock",
-    period: "Jan 22 – Oct 22",
-    portfolio: -11.2,
-    bench6040: -16.8,
-    spy: -25.4,
-  },
-  {
-    scenario: "Stagflation (sim)",
-    period: "+200bps CPI ·12mo",
-    portfolio: -9.4,
-    bench6040: -13.6,
-    spy: -22.1,
-  },
-  {
-    scenario: "EM Currency Crisis",
-    period: "EM −30%, USD +12%",
-    portfolio: -3.8,
-    bench6040: -5.4,
-    spy: -8.2,
-  },
-  {
-    scenario: "Tail Event (1pct)",
-    period: "Monte Carlo 10k",
-    portfolio: -14.8,
-    bench6040: -22.4,
-    spy: -34.0,
-  },
+// Historical stress scenario returns per asset category (approximate)
+// These are historical/estimated returns for the scenario period
+const STRESS_CATEGORY_RETURNS: Record<string, Record<string, number>> = {
+  "2008 Financial Crisis":      { equity: -52, intlEquity: -55, em: -62, bond: 5.2, tips: -2, gold: 5, cash: 1.5 },
+  "2020 Covid Crash":           { equity: -34, intlEquity: -34, em: -30, bond: 4.5, tips: 1.5, gold: 3, cash: 0.5 },
+  "2022 Rate Shock":            { equity: -19, intlEquity: -22, em: -25, bond: -16, tips: -12, gold: -2, cash: 2.5 },
+  "Stagflation (sim)":          { equity: -22, intlEquity: -24, em: -26, bond: -14, tips: 2, gold: 8, cash: 3.5 },
+  "EM Currency Crisis":         { equity: -8, intlEquity: -14, em: -30, bond: 2, tips: 0.5, gold: 3, cash: 1 },
+  "Tail Event (1pct)":          { equity: -36, intlEquity: -38, em: -42, bond: 3, tips: -3, gold: 2, cash: 1 },
+};
+
+const STRESS_SCENARIOS = [
+  { scenario: "2008 Financial Crisis",  period: "Oct 07 – Mar 09", bench6040: -36.8, spy: -56.8 },
+  { scenario: "2020 Covid Crash",       period: "Feb 20 – Mar 20", bench6040: -14.2, spy: -33.9 },
+  { scenario: "2022 Rate Shock",        period: "Jan 22 – Oct 22", bench6040: -16.8, spy: -25.4 },
+  { scenario: "Stagflation (sim)",      period: "+200bps CPI ·12mo", bench6040: -13.6, spy: -22.1 },
+  { scenario: "EM Currency Crisis",     period: "EM −30%, USD +12%", bench6040: -5.4, spy: -8.2 },
+  { scenario: "Tail Event (1pct)",      period: "Monte Carlo 10k",  bench6040: -22.4, spy: -34.0 },
 ];
 
 export default function RiskPage({
   summary,
   positions,
   perfData,
+  barsData,
   loading,
 }: Props) {
   const totalValue = summary?.total_value ?? 0;
+
+  // ── Per-symbol realized vol from historical bars ──────────
+  const symbolVol: Record<string, number> = {};
+  for (const p of positions) {
+    const sym = p.symbol.toUpperCase();
+    const bars = barsData[sym] ?? [];
+    const computed = barVol(bars);
+    symbolVol[sym] = computed ?? SYMBOL_VOL_FALLBACK[sym] ?? 15.0;
+  }
+
+  // ── Compute correlation matrix from real bar data ─────────
+  const portfolioSymbols = positions.map((p) => p.symbol.toUpperCase());
+  const corrMatrix: number[][] = portfolioSymbols.map((symA) => {
+    const barsA = barsData[symA] ?? [];
+    return portfolioSymbols.map((symB) => {
+      if (symA === symB) return 1.0;
+      const barsB = barsData[symB] ?? [];
+      if (barsA.length < 20 || barsB.length < 20) return 0;
+      const [rA, rB] = alignBarsReturns(barsA, barsB);
+      return corrCoef(rA, rB);
+    });
+  });
+  const hasCorrData = portfolioSymbols.length >= 2 && (barsData[portfolioSymbols[0]] ?? []).length >= 20;
 
   // ── Computed risk metrics from perfData ──────────────────
   const rets = dailyReturns(perfData);
@@ -366,19 +339,46 @@ export default function RiskPage({
     },
   };
 
-  // ── Volatility contribution from position weights × estimated σ ─
+  // ── Stress test: compute portfolio impact from actual weights ────
+  function getCatReturn(sym: string, name: string | null, scenarioCatReturns: Record<string, number>): number {
+    const n = (name ?? sym).toLowerCase();
+    if (n.includes("sgov") || n.includes("t-bill") || n.includes("cash") || n.includes("money")) return scenarioCatReturns.cash ?? 0;
+    if (n.includes("schp") || n.includes("tip")) return scenarioCatReturns.tips ?? 0;
+    if (n.includes("iau") || n.includes("gold")) return scenarioCatReturns.gold ?? 0;
+    if (n.includes("iemg") || n.includes("emerging")) return scenarioCatReturns.em ?? 0;
+    if (n.includes("bnd") || n.includes("bond") || n.includes("agg") || n.includes("ief")) return scenarioCatReturns.bond ?? 0;
+    if (n.includes("ixus") || n.includes("international") || n.includes("intl") || n.includes("developed")) return scenarioCatReturns.intlEquity ?? 0;
+    return scenarioCatReturns.equity ?? 0;
+  }
+
+  const STRESS = STRESS_SCENARIOS.map((s) => {
+    const catReturns = STRESS_CATEGORY_RETURNS[s.scenario] ?? {};
+    let portfolioReturn = 0;
+    if (positions.length > 0) {
+      for (const p of positions) {
+        const wt = (p.market_value ?? 0) / totalMV;
+        portfolioReturn += wt * getCatReturn(p.symbol, p.name, catReturns);
+      }
+    } else {
+      // Fallback when no positions loaded: use generic 60/40-like estimate
+      portfolioReturn = s.bench6040 * 0.65;
+    }
+    return { ...s, portfolio: parseFloat(portfolioReturn.toFixed(1)) };
+  });
+
+  // ── Volatility contribution from position weights × realized σ ─
   const totalMV =
     positions.reduce((s, p) => s + (p.market_value ?? 0), 0) || 1;
   const volContrib = positions.map((p) => {
     const wt = (p.market_value ?? 0) / totalMV;
-    const sigmaEst = SYMBOL_VOL[p.symbol.toUpperCase()] ?? 15.0;
+    const sigmaEst = symbolVol[p.symbol.toUpperCase()] ?? 15.0;
     return { symbol: p.symbol, contrib: wt * sigmaEst, mv: p.market_value ?? 0 };
   });
   const totalVC = volContrib.reduce((s, v) => s + v.contrib, 0) || 1;
 
   // ── Stop calculator rows from real position data ──────────
   const stopRows = positions.map((p) => {
-    const sigmaAnn = SYMBOL_VOL[p.symbol.toUpperCase()] ?? 15.0;
+    const sigmaAnn = symbolVol[p.symbol.toUpperCase()] ?? 15.0;
     const last = p.current_price ?? p.avg_cost;
     const stopPct = last > 100 ? 5 : last > 50 ? 5 : 7;
     const stopPx = last * (1 - stopPct / 100);
@@ -541,66 +541,69 @@ export default function RiskPage({
         <div>
           <SectionHeader
             num="03"
-            title="Correlation Matrix · 36 Mo Daily"
-            right="Pearson ρ (illustrative)"
+            title="Correlation Matrix · 2yr Daily"
+            right={hasCorrData ? "Pearson ρ · from price bars" : "Pearson ρ (need bar data)"}
           />
-          <div className="border border-parchment-border rounded overflow-hidden">
-            <table className="w-full text-2xs font-mono">
-              <thead>
-                <tr className="bg-parchment-dark border-b border-parchment-border">
-                  <th className="w-10" />
-                  {TICKERS_STATIC.map((t) => (
-                    <th key={t} className="p-1 text-center section-label">
-                      {t}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {CORR.map((row, r) => (
-                  <tr
-                    key={r}
-                    className="border-b border-parchment-border last:border-b-0"
-                  >
-                    <td className="p-1 section-label text-center bg-parchment-dark border-r border-parchment-border">
-                      {TICKERS_STATIC[r]}
-                    </td>
-                    {row.map((v, c) => (
-                      <td
-                        key={c}
-                        className="p-1 text-center"
-                        style={{
-                          backgroundColor: corrColor(v),
-                          color: Math.abs(v) >= 0.4 ? "#fff" : "#1A1611",
-                        }}
-                      >
-                        {v.toFixed(2)}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="flex items-center gap-2 mt-2">
-            <span className="section-label">−0.30</span>
-            <div className="flex-1 h-2 rounded overflow-hidden flex">
-              {[
-                "#B81C1C",
-                "#D4A5A5",
-                "#EDE5D6",
-                "#C8BFB3",
-                "#5B7A6B",
-                "#1A1611",
-              ].map((c) => (
-                <div key={c} className="flex-1" style={{ backgroundColor: c }} />
-              ))}
+          {portfolioSymbols.length < 2 ? (
+            <div className="flex items-center justify-center h-32 border border-parchment-border rounded">
+              <p className="text-ink-4 text-sm">Need ≥2 positions to compute correlations.</p>
             </div>
-            <span className="section-label">+1.00</span>
-          </div>
-          <p className="text-2xs text-ink-4 mt-1">
-            Based on long-run pairwise correlations for these ETF categories. Updated periodically.
-          </p>
+          ) : (
+            <>
+              <div className="border border-parchment-border rounded overflow-hidden">
+                <table className="w-full text-2xs font-mono">
+                  <thead>
+                    <tr className="bg-parchment-dark border-b border-parchment-border">
+                      <th className="w-10" />
+                      {portfolioSymbols.map((t) => (
+                        <th key={t} className="p-1 text-center section-label">
+                          {t}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {corrMatrix.map((row, r) => (
+                      <tr
+                        key={r}
+                        className="border-b border-parchment-border last:border-b-0"
+                      >
+                        <td className="p-1 section-label text-center bg-parchment-dark border-r border-parchment-border">
+                          {portfolioSymbols[r]}
+                        </td>
+                        {row.map((v, c) => (
+                          <td
+                            key={c}
+                            className="p-1 text-center"
+                            style={{
+                              backgroundColor: corrColor(v),
+                              color: Math.abs(v) >= 0.4 ? "#fff" : "#1A1611",
+                            }}
+                          >
+                            {v.toFixed(2)}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="flex items-center gap-2 mt-2">
+                <span className="section-label">−1.00</span>
+                <div className="flex-1 h-2 rounded overflow-hidden flex">
+                  {["#B81C1C","#D4A5A5","#EDE5D6","#C8BFB3","#5B7A6B","#1A1611"].map((c) => (
+                    <div key={c} className="flex-1" style={{ backgroundColor: c }} />
+                  ))}
+                </div>
+                <span className="section-label">+1.00</span>
+              </div>
+              <p className="text-2xs text-ink-4 mt-1">
+                {hasCorrData
+                  ? "Computed from 2yr daily returns for your holdings."
+                  : "Insufficient bar data — load price history to compute live correlations."}
+              </p>
+            </>
+          )}
         </div>
 
         <div>
@@ -742,7 +745,7 @@ export default function RiskPage({
       <SectionHeader
         num="06"
         title="Risk Budget · Volatility Contribution"
-        right="Position Weight × Est. Ann. σ"
+        right="Position Weight × Realized Ann. σ"
       />
       <div className="border border-parchment-border rounded overflow-hidden">
         <div className="flex h-10">
@@ -781,7 +784,7 @@ export default function RiskPage({
         </div>
         <div className="px-4 py-2 bg-parchment-dark border-t border-parchment-border">
           <span className="text-xs text-ink-3">
-            Weight × estimated annual volatility per asset class. Equity positions drive most portfolio variance.
+            Weight × realized annual volatility (2yr daily bars). {hasCorrData ? "Computed from Yahoo Finance data." : "Fallback estimates used for symbols without sufficient bar data."}
           </span>
         </div>
       </div>
@@ -790,7 +793,7 @@ export default function RiskPage({
       <SectionHeader
         num="07"
         title="Trailing-Stop Risk Calculator"
-        right="σ from long-run category avg · GBM approx · 30 Trading Days"
+        right="σ from realized 2yr bars (or fallback) · GBM approx · 30 Trading Days"
       />
       {positions.length === 0 ? (
         <div className="flex items-center justify-center h-32 border border-parchment-border rounded">

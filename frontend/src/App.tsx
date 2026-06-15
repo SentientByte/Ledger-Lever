@@ -15,6 +15,7 @@ import {
   manualRefresh,
   getTransactionSummary,
   getDerivedPositions,
+  getPriceBars,
 } from "./api/portfolio";
 import type {
   Position,
@@ -22,6 +23,7 @@ import type {
   PerformancePoint,
   TransactionSummary,
   DerivedPosition,
+  BarsResult,
 } from "./types";
 
 const REFRESH_INTERVAL = 60;
@@ -33,6 +35,7 @@ export default function App() {
   const [perfData, setPerfData] = useState<PerformancePoint[]>([]);
   const [txnSummary, setTxnSummary] = useState<TransactionSummary | null>(null);
   const [derivedPositions, setDerivedPositions] = useState<DerivedPosition[]>([]);
+  const [barsData, setBarsData] = useState<BarsResult>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
@@ -53,6 +56,13 @@ export default function App() {
       setPerfData(perf);
       setTxnSummary(ts);
       setDerivedPositions(dp);
+
+      // Fetch historical bars for all held symbols + benchmark ETFs
+      const benchmarks = ["SPY", "AGG", "IEF"];
+      const heldSymbols = p.map((pos) => pos.symbol.toUpperCase());
+      const allSymbols = [...new Set([...heldSymbols, ...benchmarks])];
+      const bars = await getPriceBars(allSymbols, "2y").catch(() => ({} as BarsResult));
+      setBarsData(bars);
     } finally {
       if (!quiet) setLoading(false);
     }
@@ -90,6 +100,7 @@ export default function App() {
     perfData,
     txnSummary,
     derivedPositions,
+    barsData,
     loading,
     refreshing,
     onRefresh: handleManualRefresh,

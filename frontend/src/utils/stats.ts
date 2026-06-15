@@ -1,4 +1,4 @@
-import type { PerformancePoint } from "../types";
+import type { PerformancePoint, BarData } from "../types";
 
 export function dailyReturns(data: PerformancePoint[]): number[] {
   return data.slice(1).map((d, i) => {
@@ -155,4 +155,94 @@ export function calmarRatio(data: PerformancePoint[]): number | null {
   const dd = maxDrawdownPct(data);
   if (annRet === null || dd === 0) return null;
   return annRet / Math.abs(dd);
+}
+
+// ── Bar-based utilities (historical price bars) ───────────────────────────────
+
+/** Compute daily log returns from an array of BarData. */
+export function barsToReturns(bars: BarData[]): number[] {
+  if (bars.length < 2) return [];
+  return bars.slice(1).map((b, i) => {
+    const prev = bars[i].close;
+    return prev > 0 ? (b.close - prev) / prev : 0;
+  });
+}
+
+/** Annualized volatility (%) from bar data. Requires ≥20 bars. */
+export function barVol(bars: BarData[]): number | null {
+  const rets = barsToReturns(bars);
+  if (rets.length < 20) return null;
+  return stdDev(rets) * Math.sqrt(252) * 100;
+}
+
+/** Pearson correlation between two return series aligned by length. */
+export function corrCoef(a: number[], b: number[]): number {
+  const n = Math.min(a.length, b.length);
+  if (n < 2) return 0;
+  const as = a.slice(-n);
+  const bs = b.slice(-n);
+  const ma = as.reduce((s, v) => s + v, 0) / n;
+  const mb = bs.reduce((s, v) => s + v, 0) / n;
+  let cov = 0, sa = 0, sb = 0;
+  for (let i = 0; i < n; i++) {
+    cov += (as[i] - ma) * (bs[i] - mb);
+    sa += (as[i] - ma) ** 2;
+    sb += (bs[i] - mb) ** 2;
+  }
+  const denom = Math.sqrt(sa * sb);
+  return denom > 0 ? cov / denom : 0;
+}
+
+/**
+ * Align two bar arrays by date, returning matched pairs.
+ * Returns arrays of returns for the overlapping date range.
+ */
+export function alignBarsReturns(barsA: BarData[], barsB: BarData[]): [number[], number[]] {
+  const mapB = new Map(barsB.map((b) => [b.date, b.close]));
+  const paired: [number, number][] = [];
+  for (let i = 1; i < barsA.length; i++) {
+    const dateA = barsA[i].date;
+    const datePrevA = barsA[i - 1].date;
+    const closeB = mapB.get(dateA);
+    const closePrevB = mapB.get(datePrevA);
+    if (closeB != null && closePrevB != null && closePrevB > 0 && barsA[i - 1].close > 0) {
+      paired.push([
+        (barsA[i].close - barsA[i - 1].close) / barsA[i - 1].close,
+        (closeB - closePrevB) / closePrevB,
+      ]);
+    }
+  }
+  return [paired.map((p) => p[0]), paired.map((p) => p[1])];
+}
+
+/**
+ * Index bars to 100 starting from the first bar on or after refDate.
+ * Returns an array of { date, value } ready for charting.
+ */
+export function indexBars(bars: BarData[], refDate: string): { date: string; value: number }[] {
+  const start = bars.findIndex((b) => b.date >= refDate);
+  if (start < 0) return [];
+  const base = bars[start].close;
+  if (base <= 0) return [];
+  return bars.slice(start).map((b) => ({ date: b.date, value: (b.close / base) * 100 }));
+}
+
+/** Period return (MTD/QTD/YTD) from bar data, as a percentage. */
+export function barPeriodReturn(bars: BarData[], period: "MTD" | "QTD" | "YTD"): number | null {
+  if (bars.length < 2) return null;
+  const last = bars[bars.length - 1];
+  const now = new Date(last.date);
+  let startDate: Date;
+  if (period === "MTD") {
+    startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+  } else if (period === "QTD") {
+    const qStart = Math.floor(now.getMonth() / 3) * 3;
+    startDate = new Date(now.getFullYear(), qStart, 1);
+  } else {
+    startDate = new Date(now.getFullYear(), 0, 1);
+  }
+  const startStr = startDate.toISOString().slice(0, 10);
+  const startBar = bars.find((b) => b.date >= startStr);
+  if (!startBar || startBar.close <= 0) return null;
+  return ((last.close - startBar.close) / startBar.close) * 100;
 }

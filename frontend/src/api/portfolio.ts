@@ -79,3 +79,10 @@ export const resetTransactions = () =>
 
 export const clearTransactions = () =>
   api.delete("/transactions").then((r) => r.data);
+
+export const getPriceBars = (symbols: string[], period = "2y") =>
+  api
+    .get<Record<string, { date: string; close: number }[]>>("/prices/bars", {
+      params: { symbols: symbols.join(","), period },
+    })
+    .then((r) => r.data);

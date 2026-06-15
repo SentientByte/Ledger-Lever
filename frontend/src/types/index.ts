@@ -107,3 +107,10 @@ export interface YearActivity {
   buys: number;
   sells: number;
 }
+
+export interface BarData {
+  date: string;
+  close: number;
+}
+
+export type BarsResult = Record<string, BarData[]>;

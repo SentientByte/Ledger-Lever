@@ -14,12 +14,14 @@ import type {
   PortfolioSummary,
   PerformancePoint,
   TransactionSummary,
+  BarsResult,
 } from "../types";
 import {
   dailyReturns,
   maxDrawdownPct,
   sharpeRatio,
   annualizedVol,
+  indexBars,
 } from "../utils/stats";
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, Tooltip, Legend);
@@ -29,6 +31,7 @@ interface Props {
   positions: Position[];
   perfData: PerformancePoint[];
   txnSummary: TransactionSummary | null;
+  barsData: BarsResult;
   loading: boolean;
   onAddPosition: () => void;
 }
@@ -96,6 +99,7 @@ export default function OverviewPage({
   positions,
   perfData,
   txnSummary,
+  barsData,
   loading,
   onAddPosition,
 }: Props) {
@@ -130,15 +134,46 @@ export default function OverviewPage({
   const baseVal = perfData.length > 0 ? perfData[0].total_value : 1;
   const indexed = perfData.map((d) => ((d.total_value / baseVal) * 100));
 
-  // Simulated benchmarks offset from portfolio
-  const bench6040 = perfData.map((_, i) => 100 + (indexed[i] - 100) * 0.78);
-  const benchSPY  = perfData.map((_, i) => 100 + (indexed[i] - 100) * 0.85);
-  const benchAGG  = perfData.map((_, i) => 100 + (indexed[i] - 100) * 0.30);
+  // Real benchmark lines: index SPY, AGG from the same start date as perfData
+  const perfStartDate = perfData.length > 0 ? perfData[0].timestamp.slice(0, 10) : "";
+  const spyBars = barsData["SPY"] ?? [];
+  const aggBars = barsData["AGG"] ?? [];
+  const iefBars = barsData["IEF"] ?? [];
 
+  // For each perfData date, find the nearest benchmark bar value
+  function benchAtDate(bars: { date: string; value: number }[], date: string): number | null {
+    if (bars.length === 0) return null;
+    const exact = bars.find((b) => b.date === date);
+    if (exact) return exact.value;
+    // Find closest before or equal
+    let best: { date: string; value: number } | null = null;
+    for (const b of bars) {
+      if (b.date <= date) best = b;
+      else break;
+    }
+    return best?.value ?? null;
+  }
+
+  const indexedSpyBars = perfStartDate ? indexBars(spyBars, perfStartDate) : [];
+  const indexedAggBars = perfStartDate ? indexBars(aggBars, perfStartDate) : [];
+  const indexedIefBars = perfStartDate ? indexBars(iefBars, perfStartDate) : [];
+
+  // Construct 60/40 = 0.6*SPY + 0.4*AGG indexed from same start
   const labels = perfData.map((d) => {
     const dt = new Date(d.timestamp);
     return dt.toLocaleDateString("en-US", { month: "short", year: "2-digit" });
   });
+
+  const benchSPY = perfData.map((d) => benchAtDate(indexedSpyBars, d.timestamp.slice(0, 10)));
+  const benchAGG = perfData.map((d) => benchAtDate(indexedAggBars, d.timestamp.slice(0, 10)));
+  const benchIEF = perfData.map((d) => benchAtDate(indexedIefBars, d.timestamp.slice(0, 10)));
+  const bench6040 = benchSPY.map((spy, i) => {
+    const agg = benchAGG[i];
+    if (spy == null || agg == null) return null;
+    return 0.6 * spy + 0.4 * agg;
+  });
+
+  const hasBenchmarks = indexedSpyBars.length > 0;
 
   const portReturn = perfData.length > 1
     ? (((perfData[perfData.length - 1].total_value / perfData[0].total_value) - 1) * 100).toFixed(1)
@@ -179,12 +214,10 @@ export default function OverviewPage({
     .sort((a, b) => Math.abs(b.day_gain_pct ?? 0) - Math.abs(a.day_gain_pct ?? 0))
     .slice(0, 5);
 
-  function mockSpark(seed: number, pos: boolean) {
-    return Array.from({ length: 20 }, (_, i) => {
-      const base = 100 + seed * 0.1;
-      const noise = Math.sin(i * 0.7 + seed) * 2 + (pos ? i * 0.15 : -i * 0.1);
-      return base + noise;
-    });
+  function realSpark(symbol: string): number[] {
+    const bars = barsData[symbol.toUpperCase()] ?? [];
+    const recent = bars.slice(-20);
+    return recent.map((b) => b.close);
   }
 
   const chartData = {
@@ -199,36 +232,52 @@ export default function OverviewPage({
         tension: 0.3,
         pointRadius: 0,
       },
-      {
-        label: "60/40 Bench (est.)",
-        data: bench6040,
-        borderColor: "#6B6158",
-        backgroundColor: "transparent",
-        borderWidth: 1.2,
-        borderDash: [4, 3],
-        tension: 0.3,
-        pointRadius: 0,
-      },
-      {
-        label: "SPY (est.)",
-        data: benchSPY,
-        borderColor: "#9B9088",
-        backgroundColor: "transparent",
-        borderWidth: 1.2,
-        borderDash: [4, 3],
-        tension: 0.3,
-        pointRadius: 0,
-      },
-      {
-        label: "AGG (est.)",
-        data: benchAGG,
-        borderColor: "#B8860B",
-        backgroundColor: "transparent",
-        borderWidth: 1.2,
-        borderDash: [4, 3],
-        tension: 0.3,
-        pointRadius: 0,
-      },
+      ...(hasBenchmarks ? [
+        {
+          label: "60/40 (SPY+AGG)",
+          data: bench6040,
+          borderColor: "#6B6158",
+          backgroundColor: "transparent",
+          borderWidth: 1.2,
+          borderDash: [4, 3],
+          tension: 0.3,
+          pointRadius: 0,
+          spanGaps: true,
+        },
+        {
+          label: "SPY",
+          data: benchSPY,
+          borderColor: "#9B9088",
+          backgroundColor: "transparent",
+          borderWidth: 1.2,
+          borderDash: [4, 3],
+          tension: 0.3,
+          pointRadius: 0,
+          spanGaps: true,
+        },
+        {
+          label: "AGG",
+          data: benchAGG,
+          borderColor: "#B8860B",
+          backgroundColor: "transparent",
+          borderWidth: 1.2,
+          borderDash: [4, 3],
+          tension: 0.3,
+          pointRadius: 0,
+          spanGaps: true,
+        },
+        {
+          label: "IEF",
+          data: benchIEF,
+          borderColor: "#5B7A6B",
+          backgroundColor: "transparent",
+          borderWidth: 1.0,
+          borderDash: [2, 4],
+          tension: 0.3,
+          pointRadius: 0,
+          spanGaps: true,
+        },
+      ] : []),
     ],
   };
 
@@ -559,7 +608,7 @@ export default function OverviewPage({
                           {sign(p.day_gain_pct ?? 0)}{fmt(Math.abs(p.day_gain_pct ?? 0))}%
                         </span>
                         <Sparkline
-                          values={mockSpark(p.id, pos)}
+                          values={realSpark(p.symbol)}
                           positive={pos}
                         />
                       </div>

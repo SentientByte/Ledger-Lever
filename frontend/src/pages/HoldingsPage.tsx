@@ -1,12 +1,21 @@
 import { useState } from "react";
 import { Plus, Pencil, Trash2, ChevronUp, ChevronDown, ChevronsUpDown } from "lucide-react";
 import { deletePosition } from "../api/portfolio";
-import type { Position, PortfolioSummary, DerivedPosition } from "../types";
+import type { Position, PortfolioSummary, DerivedPosition, BarsResult } from "../types";
+
+// Known expense ratios in basis points (bps) for common ETFs
+const ETF_ER_BPS: Record<string, number> = {
+  VTI: 3, VXUS: 7, IXUS: 7, BND: 3, BNDX: 7, AGG: 3, IEF: 15, TLT: 15,
+  SCHP: 5, TIP: 19, USMV: 15, QUAL: 15, MTUM: 15, IEMG: 9, EEM: 68,
+  IAU: 25, GLD: 40, SGOV: 7, SHY: 15, BIL: 14, SPY: 9, VOO: 3, IVV: 3,
+  QQQ: 20, VEA: 5, VWO: 8, LQD: 14, HYG: 48, EMB: 39, VCIT: 10,
+};
 
 interface Props {
   summary: PortfolioSummary | null;
   positions: Position[];
   derivedPositions: DerivedPosition[];
+  barsData: BarsResult;
   loading: boolean;
   onAddPosition: () => void;
   onEditPosition: (p: Position) => void;
@@ -63,6 +72,7 @@ export default function HoldingsPage({
   summary,
   positions,
   derivedPositions,
+  barsData,
   loading,
   onAddPosition,
   onEditPosition,
@@ -80,6 +90,22 @@ export default function HoldingsPage({
   const totalValue = summary?.total_value ?? 0;
   const totalCost = summary?.total_cost ?? 0;
   const n = positions.length;
+
+  // Weighted expense ratio from known ETF ER map
+  const wtdER = (() => {
+    if (positions.length === 0) return null;
+    let wtdBps = 0;
+    let coveredWeight = 0;
+    for (const p of positions) {
+      const er = ETF_ER_BPS[p.symbol.toUpperCase()];
+      if (er != null) {
+        const wt = (p.market_value ?? 0) / totalMV;
+        wtdBps += wt * er;
+        coveredWeight += wt;
+      }
+    }
+    return coveredWeight > 0 ? wtdBps : null;
+  })();
 
   // Target weights (spread evenly if no preset)
   const targetWt = 100 / Math.max(n, 1);
@@ -202,7 +228,9 @@ export default function HoldingsPage({
           </div>
           <div>
             <p className="section-label mb-1">Wtd. ER</p>
-            <p className="font-sans font-semibold text-4xl text-ink">0.07%</p>
+            <p className="font-sans font-semibold text-4xl text-ink">
+              {wtdER != null ? `${(wtdER / 100).toFixed(2)}%` : "—"}
+            </p>
           </div>
           <div>
             <p className="section-label mb-1">Aggregate</p>
@@ -403,12 +431,58 @@ export default function HoldingsPage({
           <SectionHeader num="04" title="Cost · Quality · Liquidity" right="Bps Where Applicable" />
           <div className="grid grid-cols-2 gap-px bg-parchment-border border border-parchment-border rounded overflow-hidden">
             {[
-              { label: "Wtd. Expense Ratio", value: "7.0 bps", sub: "vs ind. avg 47 bps" },
-              { label: "Median Bid/Ask", value: "1.4 bps", sub: "all positions" },
-              { label: "AUM (Smallest)", value: "$2.1 B", sub: "IAU sleeve" },
-              { label: "Tracking Error", value: "0.18%", sub: "vs stated index" },
-              { label: "Securities-Lending", value: "0", sub: "opted out" },
-              { label: "Domicile", value: "US 96%", sub: "Ireland 4%" },
+              {
+                label: "Wtd. Expense Ratio",
+                value: wtdER != null ? `${wtdER.toFixed(1)} bps` : "—",
+                sub: wtdER != null ? `vs ind. avg ~47 bps` : "Map symbols to ER",
+              },
+              {
+                label: "Positions",
+                value: String(n),
+                sub: n > 0 ? `${Object.keys(categoryTotals).length} asset categories` : "no positions loaded",
+              },
+              {
+                label: "Largest Position",
+                value: (() => {
+                  if (positions.length === 0) return "—";
+                  const top = [...positions].sort((a, b) => (b.market_value ?? 0) - (a.market_value ?? 0))[0];
+                  return top.symbol;
+                })(),
+                sub: (() => {
+                  if (positions.length === 0) return "";
+                  const top = [...positions].sort((a, b) => (b.market_value ?? 0) - (a.market_value ?? 0))[0];
+                  return `${(((top.market_value ?? 0) / totalMV) * 100).toFixed(1)}% of portfolio`;
+                })(),
+              },
+              {
+                label: "Smallest Position",
+                value: (() => {
+                  if (positions.length === 0) return "—";
+                  const bot = [...positions].sort((a, b) => (a.market_value ?? 0) - (b.market_value ?? 0))[0];
+                  return bot.symbol;
+                })(),
+                sub: (() => {
+                  if (positions.length === 0) return "";
+                  const bot = [...positions].sort((a, b) => (a.market_value ?? 0) - (b.market_value ?? 0))[0];
+                  return `${(((bot.market_value ?? 0) / totalMV) * 100).toFixed(1)}% of portfolio`;
+                })(),
+              },
+              {
+                label: "Avg Cost / Share",
+                value: positions.length > 0
+                  ? `$${fmt(positions.reduce((s, p) => s + p.avg_cost, 0) / positions.length)}`
+                  : "—",
+                sub: "across all holdings",
+              },
+              {
+                label: "Total Day Gain",
+                value: summary?.day_gain != null
+                  ? `${summary.day_gain >= 0 ? "+" : ""}$${fmt(Math.abs(summary.day_gain))}`
+                  : "—",
+                sub: summary?.day_gain_pct != null
+                  ? `${summary.day_gain_pct >= 0 ? "+" : ""}${fmt(Math.abs(summary.day_gain_pct))}% vs prev close`
+                  : "intraday",
+              },
             ].map((item) => (
               <div key={item.label} className="bg-card-bg p-4">
                 <p className="section-label mb-1">{item.label}</p>

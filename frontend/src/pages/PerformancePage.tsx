@@ -15,13 +15,15 @@ import type {
   PortfolioSummary,
   PerformancePoint,
   TransactionSummary,
+  BarsResult,
 } from "../types";
 import {
-  dailyReturns,
   monthlyReturns,
   periodReturn,
   annualizedReturnPct,
   maxDrawdownPct,
+  barPeriodReturn,
+  indexBars,
 } from "../utils/stats";
 
 ChartJS.register(
@@ -40,6 +42,7 @@ interface Props {
   positions: Position[];
   perfData: PerformancePoint[];
   txnSummary: TransactionSummary | null;
+  barsData: BarsResult;
   loading: boolean;
 }
 
@@ -77,51 +80,18 @@ function fmtNull(n: number | null, dec = 2, suffix = "%") {
   return `${sign(n)}${fmt(Math.abs(n), dec)}${suffix}`;
 }
 
-// Static benchmark comparisons (illustrative — no live benchmark feed)
-const BENCH_STATIC = [
-  {
-    name: "60/40 Bench (est.)",
-    mtd: null as number | null,
-    ytd: null as number | null,
-    y1: null as number | null,
-    best: 17.2,
-    worst: -13.8,
-    bold: false,
-    note: true,
-  },
-  {
-    name: "S&P 500 (SPY) (est.)",
-    mtd: null as number | null,
-    ytd: null as number | null,
-    y1: null as number | null,
-    best: 26.8,
-    worst: -18.2,
-    bold: false,
-    note: true,
-  },
-  {
-    name: "US Agg (AGG) (est.)",
-    mtd: null as number | null,
-    ytd: null as number | null,
-    y1: null as number | null,
-    best: 8.7,
-    worst: -13.0,
-    bold: false,
-    note: true,
-  },
-];
 
 export default function PerformancePage({
   summary,
   perfData,
   txnSummary,
+  barsData,
   loading,
 }: Props) {
   const totalValue = summary?.total_value ?? 0;
   const totalCost = summary?.total_cost ?? 0;
 
   // ── Computed period returns from real perfData ────────────
-  const rets = dailyReturns(perfData);
   const mtd = periodReturn(perfData, "MTD");
   const qtd = periodReturn(perfData, "QTD");
   const ytd = periodReturn(perfData, "YTD");
@@ -134,6 +104,81 @@ export default function PerformancePage({
 
   // Monthly returns from perfData (last 12 months)
   const computedMonthly = monthlyReturns(perfData, 12);
+
+  // Real benchmark bars
+  const spyBars = barsData["SPY"] ?? [];
+  const aggBars = barsData["AGG"] ?? [];
+
+  // Live benchmark period returns
+  const spyMtd = barPeriodReturn(spyBars, "MTD");
+  const spyQtd = barPeriodReturn(spyBars, "QTD");
+  const spyYtd = barPeriodReturn(spyBars, "YTD");
+  const aggMtd = barPeriodReturn(aggBars, "MTD");
+  const aggQtd = barPeriodReturn(aggBars, "QTD");
+  const aggYtd = barPeriodReturn(aggBars, "YTD");
+
+  // Best/worst month for benchmarks (from available bars)
+  function bestWorstMonth(bars: typeof spyBars): { best: number | null; worst: number | null } {
+    if (bars.length < 2) return { best: null, worst: null };
+    const byMonth: Record<string, { first: number; last: number }> = {};
+    for (const b of bars) {
+      const key = b.date.slice(0, 7);
+      if (!byMonth[key]) byMonth[key] = { first: b.close, last: b.close };
+      else byMonth[key].last = b.close;
+    }
+    const returns = Object.values(byMonth).map(({ first, last }) =>
+      first > 0 ? ((last - first) / first) * 100 : 0
+    );
+    if (returns.length === 0) return { best: null, worst: null };
+    return { best: Math.max(...returns), worst: Math.min(...returns) };
+  }
+  const spyBestWorst = bestWorstMonth(spyBars);
+  const aggBestWorst = bestWorstMonth(aggBars);
+
+  // SPY total return over available bars
+  const spyTotalReturn = spyBars.length >= 2
+    ? ((spyBars[spyBars.length - 1].close - spyBars[0].close) / spyBars[0].close) * 100
+    : null;
+  const aggTotalReturn = aggBars.length >= 2
+    ? ((aggBars[aggBars.length - 1].close - aggBars[0].close) / aggBars[0].close) * 100
+    : null;
+
+  // 60/40 totals
+  const bench6040Mtd = (spyMtd != null && aggMtd != null) ? 0.6 * spyMtd + 0.4 * aggMtd : null;
+  const bench6040Qtd = (spyQtd != null && aggQtd != null) ? 0.6 * spyQtd + 0.4 * aggQtd : null;
+  const bench6040Ytd = (spyYtd != null && aggYtd != null) ? 0.6 * spyYtd + 0.4 * aggYtd : null;
+  const bench6040Total = (spyTotalReturn != null && aggTotalReturn != null)
+    ? 0.6 * spyTotalReturn + 0.4 * aggTotalReturn : null;
+
+  const BENCH_REAL = [
+    {
+      name: "60/40 (SPY+AGG)",
+      mtd: bench6040Mtd,
+      qtd: bench6040Qtd,
+      ytd: bench6040Ytd,
+      total: bench6040Total,
+      best: null as number | null,
+      worst: null as number | null,
+    },
+    {
+      name: "S&P 500 (SPY)",
+      mtd: spyMtd,
+      qtd: spyQtd,
+      ytd: spyYtd,
+      total: spyTotalReturn,
+      best: spyBestWorst.best,
+      worst: spyBestWorst.worst,
+    },
+    {
+      name: "US Agg (AGG)",
+      mtd: aggMtd,
+      qtd: aggQtd,
+      ytd: aggYtd,
+      total: aggTotalReturn,
+      best: aggBestWorst.best,
+      worst: aggBestWorst.worst,
+    },
+  ];
 
   // Rolling 12-month chart from perfData
   const rollingLabels = perfData.map((_, i) => {
@@ -149,7 +194,24 @@ export default function PerformancePage({
       ? ((d.total_value - prev.total_value) / prev.total_value) * 100
       : null;
   });
-  const rollingBench = rollingPort.map((v) => (v != null ? v * 0.78 : null));
+
+  // Real SPY rolling 12-month return aligned with perfData dates
+  const perfStartDate = perfData.length > 0 ? perfData[0].timestamp.slice(0, 10) : "";
+  const indexedSpy = perfStartDate ? indexBars(spyBars, perfStartDate) : [];
+  const spyByDate = new Map(indexedSpy.map((b) => [b.date, b.value]));
+  const rollingBench = perfData.map((d, i) => {
+    if (i < 12) return null;
+    const prev = perfData[i - 12];
+    const dateNow = d.timestamp.slice(0, 10);
+    const datePrev = prev.timestamp.slice(0, 10);
+    // Find nearest SPY value for this date
+    const spyNow = spyByDate.get(dateNow) ?? null;
+    const spyPrev = spyByDate.get(datePrev) ?? null;
+    if (spyNow != null && spyPrev != null && spyPrev > 0) {
+      return ((spyNow - spyPrev) / spyPrev) * 100;
+    }
+    return null;
+  });
 
   const rollingChartData = {
     labels: rollingLabels,
@@ -166,7 +228,7 @@ export default function PerformancePage({
         spanGaps: true,
       },
       {
-        label: "60/40 Bench (est.)",
+        label: "SPY (rolling 12mo)",
         data: rollingBench,
         borderColor: "#9B9088",
         backgroundColor: "transparent",
@@ -414,16 +476,16 @@ export default function PerformancePage({
               ))}
             </tr>
 
-            {/* Benchmark rows — illustrative only */}
-            {BENCH_STATIC.map((row) => (
+            {/* Benchmark rows — from real yfinance data */}
+            {BENCH_REAL.map((row) => (
               <tr
                 key={row.name}
                 className="border-b border-parchment-border last:border-b-0 hover:bg-parchment/60"
               >
-                <td className="px-4 py-2.5 text-xs text-ink-4 whitespace-nowrap italic">
+                <td className="px-4 py-2.5 text-xs text-ink-3 whitespace-nowrap">
                   {row.name}
                 </td>
-                {[null, null, null, null, null, row.best, row.worst, null].map(
+                {[row.mtd, row.qtd, row.ytd, null, null, row.best, row.worst, row.total].map(
                   (v, i) => (
                     <td
                       key={i}
@@ -431,8 +493,8 @@ export default function PerformancePage({
                         v === null
                           ? "text-ink-5"
                           : v >= 0
-                          ? "text-ink-3"
-                          : "text-ink-3"
+                          ? "text-positive"
+                          : "neg"
                       }`}
                     >
                       {v !== null ? `${sign(v)}${fmt(Math.abs(v))}%` : "—"}
@@ -445,7 +507,7 @@ export default function PerformancePage({
         </table>
         <div className="px-4 py-2 bg-parchment-dark border-t border-parchment-border">
           <span className="text-2xs text-ink-4">
-            Portfolio metrics computed from price snapshots · Benchmark rows are illustrative historical figures, not live data
+            Portfolio metrics computed from price snapshots · Benchmark rows from Yahoo Finance historical data (2-yr window)
           </span>
         </div>
       </div>

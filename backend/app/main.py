@@ -5,8 +5,12 @@ import threading
 from datetime import datetime
 from typing import List, Optional
 
+import os
+
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from . import crud, models, schemas
@@ -83,6 +87,22 @@ def on_startup():
 @app.on_event("shutdown")
 def on_shutdown():
     stop_scheduler()
+
+
+# ── Serve bundled React frontend (Windows .exe mode) ─────────────────────────
+
+_static_dir = os.getenv("LEDGER_STATIC_DIR", "")
+if _static_dir and os.path.isdir(_static_dir):
+    app.mount("/assets", StaticFiles(directory=os.path.join(_static_dir, "assets")), name="assets")
+
+    @app.get("/", include_in_schema=False)
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def serve_spa(full_path: str = ""):
+        # Let /api/* routes fall through to their own handlers.
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404)
+        index = os.path.join(_static_dir, "index.html")
+        return FileResponse(index)
 
 
 # ── Health ────────────────────────────────────────────────────────────────────

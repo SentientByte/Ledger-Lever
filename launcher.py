@@ -41,6 +41,13 @@ if __name__ == "__main__":
 
     threading.Thread(target=_open_browser, daemon=True).start()
 
+    # Redirect stdout/stderr to avoid uvicorn's color formatter crashing when
+    # sys.stdout is None (e.g. PyInstaller --noconsole builds).
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w")
+
     uvicorn.run(
         "backend.app.main:app",
         host=HOST,

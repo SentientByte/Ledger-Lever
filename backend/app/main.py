@@ -58,7 +58,12 @@ _DATE_FORMATS = [
     "%m/%d/%Y",
 ]
 
-logging.basicConfig(level=logging.INFO)
+_log_level = logging.DEBUG if os.getenv("DEBUG") else logging.INFO
+logging.basicConfig(
+    level=_log_level,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
 Base.metadata.create_all(bind=engine)
 
 # Migrate: add listing_exchange column to any tables that predate it
@@ -82,6 +87,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+if os.getenv("DEBUG"):
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.requests import Request as StarletteRequest
+    import time
+
+    class RequestLoggingMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: StarletteRequest, call_next):
+            start = time.time()
+            response = await call_next(request)
+            elapsed = (time.time() - start) * 1000
+            logger.debug(
+                "%s %s → %d (%.0fms)",
+                request.method, request.url.path, response.status_code, elapsed,
+            )
+            return response
+
+    app.add_middleware(RequestLoggingMiddleware)
 
 
 @app.on_event("startup")
@@ -115,6 +138,25 @@ if _static_dir and os.path.isdir(_static_dir):
 @app.get("/api/health")
 def health():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+
+
+@app.get("/api/debug")
+def debug_info():
+    """Returns runtime debug info. Only available when DEBUG env var is set."""
+    if not os.getenv("DEBUG"):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Not found")
+    import sys, platform
+    db_url = os.getenv("DATABASE_URL", os.getenv("LEDGER_DB_PATH", "default"))
+    return {
+        "debug": True,
+        "python": sys.version,
+        "platform": platform.platform(),
+        "database_url": db_url,
+        "env": {k: v for k, v in os.environ.items() if not any(s in k.lower() for s in ("key", "secret", "pass", "token"))},
+        "log_level": logging.getLevelName(_log_level),
+        "timestamp": datetime.utcnow().isoformat(),
+    }
 
 
 # ── Portfolio summary ─────────────────────────────────────────────────────────

@@ -61,13 +61,18 @@ _DATE_FORMATS = [
 logging.basicConfig(level=logging.INFO)
 Base.metadata.create_all(bind=engine)
 
-# Migrate: add listing_exchange column if it doesn't exist yet
+# Migrate: add listing_exchange column to any tables that predate it
 from sqlalchemy import inspect as sa_inspect, text as sa_text
 with engine.connect() as _conn:
-    _cols = [c["name"] for c in sa_inspect(engine).get_columns("transactions")]
-    if "listing_exchange" not in _cols:
-        _conn.execute(sa_text("ALTER TABLE transactions ADD COLUMN listing_exchange VARCHAR"))
-        _conn.commit()
+    _insp = sa_inspect(engine)
+    for _table in ("transactions", "cached_positions"):
+        try:
+            _cols = [c["name"] for c in _insp.get_columns(_table)]
+        except Exception:
+            continue
+        if "listing_exchange" not in _cols:
+            _conn.execute(sa_text(f"ALTER TABLE {_table} ADD COLUMN listing_exchange VARCHAR"))
+    _conn.commit()
 
 app = FastAPI(title="Ledger Lever", version="1.0.0")
 

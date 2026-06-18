@@ -68,9 +68,7 @@ export const uploadTransactions = (file: File) => {
   const form = new FormData();
   form.append("file", file);
   return api
-    .post<TransactionUploadResult>("/transactions/upload", form, {
-      headers: { "Content-Type": "multipart/form-data" },
-    })
+    .post<TransactionUploadResult>("/transactions/upload", form)
     .then((r) => r.data);
 };
 

@@ -64,14 +64,9 @@ def refresh_prices() -> None:
         if names_to_update:
             crud.update_position_names(db, names_to_update)
 
-        # For any remaining nameless positions, fetch via ticker.info (slow but once per symbol).
-        nameless = [
-            p.symbol for p in positions if not p.name and p.symbol not in names_to_update
-        ]
-        if nameless:
-            slow_names = get_ticker_names(nameless, exchange_map)
-            if slow_names:
-                crud.update_position_names(db, slow_names)
+        # ticker.info / quoteSummary endpoint is the most aggressively rate-limited Yahoo
+        # endpoint, so we skip the slow name-fetch entirely during the price refresh loop.
+        # Names will surface naturally once fast_info starts returning data.
 
         # Compute portfolio snapshot from positions table (kept in sync with FIFO)
         latest = crud.get_latest_prices(db, all_symbols)

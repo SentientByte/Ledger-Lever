@@ -20,7 +20,7 @@ _EXCHANGE_SUFFIX: Dict[str, str] = {
     "AMEX": "",
     "CBOE": "",
     "IEX": "",
-    "LSEETF": "",   # IBKR sometimes tags US-listed ETFs with this; no suffix needed
+    "LSEETF": ".L",  # IBKR code for London Stock Exchange ETFs
     # Canada
     "TSX": ".TO",
     "TSE": ".TO",   # IBKR uses TSE for Toronto Stock Exchange

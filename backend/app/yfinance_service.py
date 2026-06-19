@@ -6,6 +6,42 @@ import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
+# stooq uses its own suffix scheme, different from yfinance
+_STOOQ_SUFFIX: Dict[str, str] = {
+    # United States
+    "NYSE": ".us",
+    "NASDAQ": ".us",
+    "NASDAQ_CM": ".us",
+    "NASDAQ_GM": ".us",
+    "NASDAQ_GS": ".us",
+    "ARCA": ".us",
+    "BATS": ".us",
+    "AMEX": ".us",
+    "CBOE": ".us",
+    "IEX": ".us",
+    # United Kingdom
+    "LSE": ".uk",
+    "LSEETF": ".uk",
+    # Canada
+    "TSX": ".ca",
+    "TSE": ".ca",
+    "TSXV": ".ca",
+    "CVE": ".ca",
+    # Germany
+    "XETRA": ".de",
+    "FWB": ".de",
+    # Japan
+    "TSE_JP": ".jp",
+    # Hong Kong
+    "HKEX": ".hk",
+    "HKG": ".hk",
+    # Hungary (stooq is Polish-origin, strong EU coverage)
+    "EURONEXT": ".fr",
+    "AEX": ".nl",
+    # Australia — stooq has limited AU coverage, best-effort
+    "ASX": ".au",
+}
+
 # Maps listing exchange identifiers (as they appear in broker CSVs) to yfinance ticker suffixes.
 # US exchanges require no suffix; non-US exchanges need one.
 _EXCHANGE_SUFFIX: Dict[str, str] = {
@@ -172,40 +208,105 @@ def get_price_history(
         return []
 
 
+def _bars_from_dataframe(hist) -> List[dict]:
+    """Convert a yfinance/stooq OHLCV DataFrame to our bar dict format."""
+    bars = []
+    for idx, row in hist.iterrows():
+        bar_date = idx.date() if hasattr(idx, "date") else idx
+        bars.append({
+            "date": bar_date,
+            "open": round(float(row["Open"]), 6) if row["Open"] else None,
+            "high": round(float(row["High"]), 6) if row["High"] else None,
+            "low": round(float(row["Low"]), 6) if row["Low"] else None,
+            "close": round(float(row["Close"]), 6),
+            "volume": float(row["Volume"]) if row["Volume"] else None,
+        })
+    return bars
+
+
+def _get_stooq_ticker(symbol: str, listing_exchange: Optional[str] = None) -> str:
+    sym = symbol.lower()
+    suffix = ""
+    if listing_exchange:
+        suffix = _STOOQ_SUFFIX.get(listing_exchange.upper(), ".us")
+    else:
+        suffix = ".us"
+    return f"{sym}{suffix}"
+
+
+def _fetch_historical_stooq(symbol: str, start_date, listing_exchange: Optional[str] = None) -> List[dict]:
+    """Fallback historical fetch using stooq via pandas-datareader."""
+    try:
+        import pandas_datareader.data as pdr
+        from datetime import date as date_type
+    except ImportError:
+        logger.warning("pandas-datareader not installed; stooq fallback unavailable")
+        return []
+
+    stooq_ticker = _get_stooq_ticker(symbol, listing_exchange)
+    if hasattr(start_date, "isoformat"):
+        start = start_date
+    else:
+        from datetime import date as date_type
+        start = date_type.fromisoformat(str(start_date))
+
+    try:
+        hist = pdr.DataReader(stooq_ticker, "stooq", start=start)
+        if hist is None or hist.empty:
+            logger.warning("stooq fallback: no data for %s (%s)", symbol, stooq_ticker)
+            return []
+        # stooq returns newest-first; sort ascending
+        hist = hist.sort_index()
+        logger.info("stooq fallback: got %d bars for %s (%s)", len(hist), symbol, stooq_ticker)
+        return _bars_from_dataframe(hist)
+    except Exception as exc:
+        logger.warning("stooq fallback failed for %s (%s): %s", symbol, stooq_ticker, exc)
+        return []
+
+
 def get_historical_daily_prices(
     symbol: str,
     start_date,
     listing_exchange: Optional[str] = None,
 ) -> List[dict]:
     """
-    Fetch daily OHLCV bars from yfinance for a 2-year historical backfill.
+    Fetch daily OHLCV bars for a 2-year historical backfill.
+    Tries yfinance first; falls back to stooq if Yahoo rate-limits or returns nothing.
     Returns a list of dicts with keys: date, open, high, low, close, volume.
     """
-    from datetime import date as date_type, datetime as dt_type
     yf_ticker = get_yf_ticker(symbol, listing_exchange)
-    try:
-        if hasattr(start_date, "isoformat"):
-            start_str = start_date.isoformat()
-        else:
-            start_str = str(start_date)
-        hist = yf.Ticker(yf_ticker).history(start=start_str, auto_adjust=True)
-        if hist.empty:
-            return []
-        bars = []
-        for idx, row in hist.iterrows():
-            bar_date = idx.date() if hasattr(idx, "date") else idx
-            bars.append({
-                "date": bar_date,
-                "open": round(float(row["Open"]), 6) if row["Open"] else None,
-                "high": round(float(row["High"]), 6) if row["High"] else None,
-                "low": round(float(row["Low"]), 6) if row["Low"] else None,
-                "close": round(float(row["Close"]), 6),
-                "volume": float(row["Volume"]) if row["Volume"] else None,
-            })
-        return bars
-    except Exception as exc:
-        logger.error("Historical daily fetch error for %s (%s): %s", symbol, yf_ticker, exc)
-        return []
+    if hasattr(start_date, "isoformat"):
+        start_str = start_date.isoformat()
+    else:
+        start_str = str(start_date)
+
+    backoff = 5
+    yf_failed = False
+    for attempt in range(4):
+        try:
+            hist = yf.Ticker(yf_ticker).history(start=start_str, auto_adjust=True)
+            if not hist.empty:
+                return _bars_from_dataframe(hist)
+            # Empty result — try stooq immediately
+            yf_failed = True
+            break
+        except Exception as exc:
+            msg = str(exc)
+            if ("char 0" in msg or "429" in msg) and attempt < 3:
+                logger.warning(
+                    "yfinance rate-limited for %s (%s), retrying in %ds (attempt %d/4)",
+                    symbol, yf_ticker, backoff, attempt + 1,
+                )
+                time.sleep(backoff)
+                backoff *= 2
+                continue
+            logger.warning("yfinance historical fetch failed for %s (%s): %s — trying stooq", symbol, yf_ticker, exc)
+            yf_failed = True
+            break
+
+    if yf_failed:
+        return _fetch_historical_stooq(symbol, start_date, listing_exchange)
+    return []
 
 
 def validate_symbol(symbol: str, listing_exchange: Optional[str] = None) -> Optional[dict]:

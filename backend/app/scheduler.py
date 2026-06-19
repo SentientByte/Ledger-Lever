@@ -132,7 +132,7 @@ def backfill_historical_data() -> None:
                     logger.info("Backfill: stored %d bars for %s", count, symbol)
                 else:
                     logger.warning("Backfill: no historical bars returned for %s", symbol)
-                time.sleep(0.6)  # gentle rate-limiting between symbols
+                time.sleep(2.0)  # avoid Yahoo Finance rate limits between symbols
 
         # ── Step 2: pre-load all cached prices into memory ────────────────────
         all_hist: dict = {}  # {symbol: {date: close_price}}

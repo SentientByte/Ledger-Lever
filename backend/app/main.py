@@ -60,14 +60,21 @@ _DATE_FORMATS = [
 
 _log_level = logging.DEBUG if os.getenv("DEBUG") else logging.INFO
 _log_format = "%(asctime)s %(levelname)s %(name)s: %(message)s"
-_log_file = os.path.join(os.path.dirname(__file__), "..", "app.log")
+
+import sys as _sys
+if getattr(_sys, "frozen", False):
+    _log_dir = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "LedgerLever")
+else:
+    _log_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+os.makedirs(_log_dir, exist_ok=True)
+_log_file = os.path.join(_log_dir, "app.log")
 
 logging.basicConfig(
     level=_log_level,
     format=_log_format,
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(os.path.abspath(_log_file), encoding="utf-8"),
+        logging.FileHandler(_log_file, encoding="utf-8"),
     ],
 )
 logger = logging.getLogger(__name__)

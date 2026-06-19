@@ -457,15 +457,34 @@ def reset_transactions(db: Session = Depends(get_db)):
 
 @app.post("/api/transactions/upload", response_model=schemas.TransactionUploadResult)
 async def upload_transactions(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    contents = await file.read()
-    text = contents.decode("utf-8-sig")  # handle BOM
+    logger.info("CSV upload started: filename=%r content_type=%r size=%s",
+                file.filename, file.content_type, file.size)
+
+    try:
+        contents = await file.read()
+    except Exception as exc:
+        logger.error("CSV upload: failed to read file bytes: %s", exc, exc_info=True)
+        raise HTTPException(status_code=400, detail="Could not read uploaded file.")
+
+    logger.info("CSV upload: read %d bytes", len(contents))
+
+    try:
+        text = contents.decode("utf-8-sig")  # handle BOM
+    except Exception as exc:
+        logger.error("CSV upload: decode error (tried utf-8-sig): %s", exc, exc_info=True)
+        raise HTTPException(status_code=400, detail="File is not valid UTF-8 text.")
+
     reader = csv.DictReader(io.StringIO(text))
+
+    raw_fieldnames = reader.fieldnames or []
+    logger.info("CSV upload: raw headers = %s", raw_fieldnames)
 
     # Normalise header names: lower-case, strip whitespace, unify separators
     reader.fieldnames = [
         f.strip().lower().replace("/", "_").replace(" ", "_")
-        for f in (reader.fieldnames or [])
+        for f in raw_fieldnames
     ]
+    logger.info("CSV upload: normalised headers = %s", reader.fieldnames)
 
     added = duplicates = errors = total = 0
     for row in reader:
@@ -473,9 +492,30 @@ async def upload_transactions(file: UploadFile = File(...), db: Session = Depend
         try:
             sym = row.get("symbol", "").strip().upper()
             dt_raw = row.get("date_time", row.get("date", "")).strip()
-            qty = float(row.get("quantity", 0))
-            price = float(row.get("price", 0))
-            commission = float(row.get("commission", 0))
+            qty_raw = row.get("quantity", "0")
+            price_raw = row.get("price", "0")
+            commission_raw = row.get("commission", "0")
+
+            try:
+                qty = float(qty_raw)
+            except (ValueError, TypeError) as exc:
+                logger.warning("CSV row %d: cannot parse quantity %r — %s | full row: %s",
+                               total, qty_raw, exc, dict(row))
+                errors += 1
+                continue
+
+            try:
+                price = float(price_raw)
+            except (ValueError, TypeError) as exc:
+                logger.warning("CSV row %d: cannot parse price %r — %s | full row: %s",
+                               total, price_raw, exc, dict(row))
+                errors += 1
+                continue
+
+            try:
+                commission = float(commission_raw)
+            except (ValueError, TypeError):
+                commission = 0.0
 
             # Support IBKR column name variants: ListingExch / ListingExchange / Listing Exchange
             listing_exchange = (
@@ -485,22 +525,47 @@ async def upload_transactions(file: UploadFile = File(...), db: Session = Depend
                 or ""
             ).strip() or None
 
-            if not sym or not dt_raw or qty == 0 or price <= 0:
+            if not sym:
+                logger.warning("CSV row %d: missing symbol | full row: %s", total, dict(row))
+                errors += 1
+                continue
+            if not dt_raw:
+                logger.warning("CSV row %d: missing date/date_time | full row: %s", total, dict(row))
+                errors += 1
+                continue
+            if qty == 0:
+                logger.warning("CSV row %d: quantity is 0 (skipping) | sym=%s dt=%s", total, sym, dt_raw)
+                errors += 1
+                continue
+            if price <= 0:
+                logger.warning("CSV row %d: price <= 0 (%s) | sym=%s dt=%s", total, price, sym, dt_raw)
                 errors += 1
                 continue
 
             dt = _parse_dt(dt_raw)
             if dt is None:
+                logger.warning("CSV row %d: unrecognised date format %r | sym=%s | supported formats: %s",
+                               total, dt_raw, sym, _DATE_FORMATS)
                 errors += 1
                 continue
 
             _, dup = crud.create_transaction(db, sym, dt, qty, price, commission, listing_exchange)
             if dup:
                 duplicates += 1
+                logger.debug("CSV row %d: duplicate skipped sym=%s dt=%s qty=%s price=%s",
+                             total, sym, dt, qty, price)
             else:
                 added += 1
-        except Exception:
+                logger.debug("CSV row %d: added sym=%s dt=%s qty=%s price=%s",
+                             total, sym, dt, qty, price)
+
+        except Exception as exc:
+            logger.error("CSV row %d: unexpected error — %s | full row: %s",
+                         total, exc, dict(row), exc_info=True)
             errors += 1
+
+    logger.info("CSV upload complete: total=%d added=%d duplicates=%d errors=%d",
+                total, added, duplicates, errors)
 
     # Synchronously update FIFO cache + positions so the next API calls use fresh data
     if added > 0:

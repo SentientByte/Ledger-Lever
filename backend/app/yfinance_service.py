@@ -54,7 +54,10 @@ def get_yf_ticker(symbol: str, listing_exchange: Optional[str] = None) -> str:
     sym = symbol.upper()
     if not listing_exchange:
         return sym
-    suffix = _EXCHANGE_SUFFIX.get(listing_exchange.upper(), "")
+    exch_upper = listing_exchange.upper()
+    if exch_upper not in _EXCHANGE_SUFFIX:
+        logger.warning("Unknown listing exchange %r for %s — no suffix applied", listing_exchange, sym)
+    suffix = _EXCHANGE_SUFFIX.get(exch_upper, "")
     return f"{sym}{suffix}"
 
 
@@ -77,8 +80,10 @@ def get_current_prices(
     yf_ticker_to_sym: Dict[str, str] = {}
     for symbol in symbols:
         sym = symbol.upper()
-        yf_ticker = get_yf_ticker(sym, exch_map.get(sym))
+        exchange = exch_map.get(sym)
+        yf_ticker = get_yf_ticker(sym, exchange)
         yf_ticker_to_sym[yf_ticker] = sym
+        logger.info("yfinance ticker mapping: %s (exchange=%s) -> %s", sym, exchange, yf_ticker)
 
     tickers = list(yf_ticker_to_sym.items())
     for idx, (yf_ticker, sym) in enumerate(tickers):

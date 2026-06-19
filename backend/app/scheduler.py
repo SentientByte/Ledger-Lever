@@ -14,7 +14,8 @@ logger = logging.getLogger(__name__)
 _scheduler = BackgroundScheduler(timezone="UTC")
 
 _PRICE_BATCH_SIZE = 8   # symbols per yfinance batch
-_BATCH_DELAY_S = 1.0    # seconds between batches to avoid rate-limiting
+_BATCH_DELAY_S = 2.0    # seconds between batches to avoid rate-limiting
+_TICKER_DELAY_S = 1.5   # seconds between individual ticker requests within a batch
 
 
 def refresh_prices() -> None:
@@ -240,13 +241,13 @@ def start_scheduler() -> None:
     import threading
     _scheduler.add_job(
         refresh_prices,
-        trigger=IntervalTrigger(seconds=60),
+        trigger=IntervalTrigger(seconds=300),
         id="refresh_prices",
         replace_existing=True,
         max_instances=1,
     )
     _scheduler.start()
-    logger.info("Scheduler started (60 s interval)")
+    logger.info("Scheduler started (300 s interval)")
     refresh_prices()
     # Kick off a 2-year historical backfill in the background so it doesn't
     # block startup. Subsequent calls are safe — already-cached dates are skipped.

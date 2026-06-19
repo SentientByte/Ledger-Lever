@@ -80,37 +80,47 @@ def get_current_prices(
         yf_ticker = get_yf_ticker(sym, exch_map.get(sym))
         yf_ticker_to_sym[yf_ticker] = sym
 
-    for yf_ticker, sym in yf_ticker_to_sym.items():
-        try:
-            ticker = yf.Ticker(yf_ticker)
-            fi = ticker.fast_info
+    tickers = list(yf_ticker_to_sym.items())
+    for idx, (yf_ticker, sym) in enumerate(tickers):
+        if idx > 0:
+            time.sleep(1.5)
+        for attempt in range(3):
+            try:
+                ticker = yf.Ticker(yf_ticker)
+                fi = ticker.fast_info
 
-            price = getattr(fi, "last_price", None)
-            prev_close = getattr(fi, "previous_close", None)
+                price = getattr(fi, "last_price", None)
+                prev_close = getattr(fi, "previous_close", None)
 
-            # Fallback to 1-day history when fast_info has no price
-            if price is None:
-                try:
-                    hist = ticker.history(period="1d")
-                    if not hist.empty:
-                        price = float(hist["Close"].iloc[-1])
-                        if prev_close is None and len(hist) >= 2:
-                            prev_close = float(hist["Close"].iloc[-2])
-                except Exception:
-                    pass
+                # Fallback to 1-day history when fast_info has no price
+                if price is None:
+                    try:
+                        hist = ticker.history(period="1d")
+                        if not hist.empty:
+                            price = float(hist["Close"].iloc[-1])
+                            if prev_close is None and len(hist) >= 2:
+                                prev_close = float(hist["Close"].iloc[-2])
+                    except Exception:
+                        pass
 
-            result[sym] = {
-                "price": float(price) if price is not None else None,
-                "prev_close": float(prev_close) if prev_close is not None else None,
-                "day_high": float(getattr(fi, "day_high", None) or 0) or None,
-                "day_low": float(getattr(fi, "day_low", None) or 0) or None,
-                "volume": getattr(fi, "last_volume", None),
-                "market_cap": getattr(fi, "market_cap", None),
-                # Name is populated by the scheduler via a separate slow call
-                "name": None,
-            }
-        except Exception as exc:
-            logger.warning("Error fetching %s (%s): %s", sym, yf_ticker, exc)
+                result[sym] = {
+                    "price": float(price) if price is not None else None,
+                    "prev_close": float(prev_close) if prev_close is not None else None,
+                    "day_high": float(getattr(fi, "day_high", None) or 0) or None,
+                    "day_low": float(getattr(fi, "day_low", None) or 0) or None,
+                    "volume": getattr(fi, "last_volume", None),
+                    "market_cap": getattr(fi, "market_cap", None),
+                    # Name is populated by the scheduler via a separate slow call
+                    "name": None,
+                }
+                break
+            except Exception as exc:
+                msg = str(exc)
+                if "429" in msg and attempt < 2:
+                    time.sleep(10 * (attempt + 1))
+                    continue
+                logger.warning("Error fetching %s (%s): %s", sym, yf_ticker, exc)
+                break
 
     return result
 

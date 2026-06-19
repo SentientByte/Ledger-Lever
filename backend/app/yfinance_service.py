@@ -181,31 +181,44 @@ def get_historical_daily_prices(
     Fetch daily OHLCV bars from yfinance for a 2-year historical backfill.
     Returns a list of dicts with keys: date, open, high, low, close, volume.
     """
-    from datetime import date as date_type, datetime as dt_type
     yf_ticker = get_yf_ticker(symbol, listing_exchange)
-    try:
-        if hasattr(start_date, "isoformat"):
-            start_str = start_date.isoformat()
-        else:
-            start_str = str(start_date)
-        hist = yf.Ticker(yf_ticker).history(start=start_str, auto_adjust=True)
-        if hist.empty:
+    if hasattr(start_date, "isoformat"):
+        start_str = start_date.isoformat()
+    else:
+        start_str = str(start_date)
+
+    backoff = 5
+    for attempt in range(4):
+        try:
+            hist = yf.Ticker(yf_ticker).history(start=start_str, auto_adjust=True)
+            if hist.empty:
+                return []
+            bars = []
+            for idx, row in hist.iterrows():
+                bar_date = idx.date() if hasattr(idx, "date") else idx
+                bars.append({
+                    "date": bar_date,
+                    "open": round(float(row["Open"]), 6) if row["Open"] else None,
+                    "high": round(float(row["High"]), 6) if row["High"] else None,
+                    "low": round(float(row["Low"]), 6) if row["Low"] else None,
+                    "close": round(float(row["Close"]), 6),
+                    "volume": float(row["Volume"]) if row["Volume"] else None,
+                })
+            return bars
+        except Exception as exc:
+            msg = str(exc)
+            # Empty body (char 0) or 429 → rate-limited; retry with backoff
+            if ("char 0" in msg or "429" in msg) and attempt < 3:
+                logger.warning(
+                    "Historical fetch rate-limited for %s (%s), retrying in %ds (attempt %d/4)",
+                    symbol, yf_ticker, backoff, attempt + 1,
+                )
+                time.sleep(backoff)
+                backoff *= 2
+                continue
+            logger.error("Historical daily fetch error for %s (%s): %s", symbol, yf_ticker, exc)
             return []
-        bars = []
-        for idx, row in hist.iterrows():
-            bar_date = idx.date() if hasattr(idx, "date") else idx
-            bars.append({
-                "date": bar_date,
-                "open": round(float(row["Open"]), 6) if row["Open"] else None,
-                "high": round(float(row["High"]), 6) if row["High"] else None,
-                "low": round(float(row["Low"]), 6) if row["Low"] else None,
-                "close": round(float(row["Close"]), 6),
-                "volume": float(row["Volume"]) if row["Volume"] else None,
-            })
-        return bars
-    except Exception as exc:
-        logger.error("Historical daily fetch error for %s (%s): %s", symbol, yf_ticker, exc)
-        return []
+    return []
 
 
 def validate_symbol(symbol: str, listing_exchange: Optional[str] = None) -> Optional[dict]:

@@ -59,9 +59,16 @@ _DATE_FORMATS = [
 ]
 
 _log_level = logging.DEBUG if os.getenv("DEBUG") else logging.INFO
+_log_format = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+_log_file = os.path.join(os.path.dirname(__file__), "..", "app.log")
+
 logging.basicConfig(
     level=_log_level,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    format=_log_format,
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(os.path.abspath(_log_file), encoding="utf-8"),
+    ],
 )
 logger = logging.getLogger(__name__)
 Base.metadata.create_all(bind=engine)

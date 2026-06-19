@@ -462,7 +462,6 @@ def reset_transactions(db: Session = Depends(get_db)):
     crud.clear_cache(db)
     added = _load_sample_transactions(db)
     _sync_cache_and_positions(db)
-    threading.Thread(target=refresh_prices, daemon=True).start()
     threading.Thread(target=backfill_historical_data, daemon=True, name="hist-backfill-reset").start()
     return schemas.TransactionUploadResult(
         added=added, duplicates=0, errors=0, total_rows=len(_SAMPLE_TRANSACTIONS)
@@ -585,8 +584,7 @@ async def upload_transactions(file: UploadFile = File(...), db: Session = Depend
     if added > 0:
         _sync_cache_and_positions(db)
 
-    # Kick off background price refresh + historical backfill for any new symbols
-    threading.Thread(target=refresh_prices, daemon=True).start()
+    # Kick off historical backfill for any new symbols; the scheduler handles price refresh.
     if added > 0:
         threading.Thread(target=backfill_historical_data, daemon=True, name="hist-backfill-upload").start()
 

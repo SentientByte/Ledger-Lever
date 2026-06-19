@@ -8,3 +8,4 @@ pydantic==2.9.2
 python-multipart==0.0.12
 aiofiles==24.1.0
 pandas-datareader==0.10.0
+requests==2.33.1

@@ -131,22 +131,6 @@ def on_shutdown():
     stop_scheduler()
 
 
-# ── Serve bundled React frontend (Windows .exe mode) ─────────────────────────
-
-_static_dir = os.getenv("LEDGER_STATIC_DIR", "")
-if _static_dir and os.path.isdir(_static_dir):
-    app.mount("/assets", StaticFiles(directory=os.path.join(_static_dir, "assets")), name="assets")
-
-    @app.get("/", include_in_schema=False)
-    @app.get("/{full_path:path}", include_in_schema=False)
-    def serve_spa(full_path: str = ""):
-        # Let /api/* routes fall through to their own handlers.
-        if full_path.startswith("api/"):
-            raise HTTPException(status_code=404)
-        index = os.path.join(_static_dir, "index.html")
-        return FileResponse(index)
-
-
 # ── Health ────────────────────────────────────────────────────────────────────
 
 @app.get("/api/health")
@@ -721,3 +705,17 @@ def clear_transactions(db: Session = Depends(get_db)):
     db.query(models.Position).delete()
     db.commit()
     return {"message": "cleared"}
+
+
+# ── Serve bundled React frontend (Windows .exe mode) ─────────────────────────
+# Must be registered AFTER all /api/* routes so the catch-all does not shadow them.
+
+_static_dir = os.getenv("LEDGER_STATIC_DIR", "")
+if _static_dir and os.path.isdir(_static_dir):
+    app.mount("/assets", StaticFiles(directory=os.path.join(_static_dir, "assets")), name="assets")
+
+    @app.get("/", include_in_schema=False)
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def serve_spa(full_path: str = ""):
+        index = os.path.join(_static_dir, "index.html")
+        return FileResponse(index)

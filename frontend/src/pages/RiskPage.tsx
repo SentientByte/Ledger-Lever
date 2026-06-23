@@ -30,6 +30,7 @@ import {
   SYMBOL_VOL_FALLBACK,
 } from "../utils/stats";
 import MonteCarloSimulator from "../components/MonteCarloSimulator";
+import { computeFactorExposures, computeStressTests } from "../utils/factors";
 
 ChartJS.register(
   CategoryScale,
@@ -100,37 +101,6 @@ function corrColor(v: number) {
   if (v >= -0.4) return "#D4A5A5";
   return "#B81C1C";
 }
-
-const FACTORS = [
-  { name: "Market (β)", value: 0.74, note: "underweight broad equity beta", dir: 1 },
-  { name: "Size (SMB)", value: -0.12, note: "large-cap tilt", dir: -1 },
-  { name: "Value (HML)", value: -0.08, note: "modest value lean", dir: -1 },
-  { name: "Profitability", value: 0.21, note: "quality bias from USMV", dir: 1 },
-  { name: "Low Volatility", value: 0.34, note: "defensive equity factor", dir: 1 },
-  { name: "Term (TERM)", value: 0.42, note: "duration via IEF", dir: 1 },
-  { name: "Credit (DEF)", value: 0.06, note: "minimal HY exposure", dir: 1 },
-  { name: "Inflation (BEI)", value: 0.18, note: "TIPS hedge", dir: 1 },
-];
-
-// Historical stress scenario returns per asset category (approximate)
-// These are historical/estimated returns for the scenario period
-const STRESS_CATEGORY_RETURNS: Record<string, Record<string, number>> = {
-  "2008 Financial Crisis":      { equity: -52, intlEquity: -55, em: -62, bond: 5.2, tips: -2, gold: 5, cash: 1.5 },
-  "2020 Covid Crash":           { equity: -34, intlEquity: -34, em: -30, bond: 4.5, tips: 1.5, gold: 3, cash: 0.5 },
-  "2022 Rate Shock":            { equity: -19, intlEquity: -22, em: -25, bond: -16, tips: -12, gold: -2, cash: 2.5 },
-  "Stagflation (sim)":          { equity: -22, intlEquity: -24, em: -26, bond: -14, tips: 2, gold: 8, cash: 3.5 },
-  "EM Currency Crisis":         { equity: -8, intlEquity: -14, em: -30, bond: 2, tips: 0.5, gold: 3, cash: 1 },
-  "Tail Event (1pct)":          { equity: -36, intlEquity: -38, em: -42, bond: 3, tips: -3, gold: 2, cash: 1 },
-};
-
-const STRESS_SCENARIOS = [
-  { scenario: "2008 Financial Crisis",  period: "Oct 07 – Mar 09", bench6040: -36.8, spy: -56.8 },
-  { scenario: "2020 Covid Crash",       period: "Feb 20 – Mar 20", bench6040: -14.2, spy: -33.9 },
-  { scenario: "2022 Rate Shock",        period: "Jan 22 – Oct 22", bench6040: -16.8, spy: -25.4 },
-  { scenario: "Stagflation (sim)",      period: "+200bps CPI ·12mo", bench6040: -13.6, spy: -22.1 },
-  { scenario: "EM Currency Crisis",     period: "EM −30%, USD +12%", bench6040: -5.4, spy: -8.2 },
-  { scenario: "Tail Event (1pct)",      period: "Monte Carlo 10k",  bench6040: -22.4, spy: -34.0 },
-];
 
 export default function RiskPage({
   summary,
@@ -347,32 +317,19 @@ export default function RiskPage({
     },
   };
 
-  // ── Stress test: compute portfolio impact from actual weights ────
-  function getCatReturn(sym: string, name: string | null, scenarioCatReturns: Record<string, number>): number {
-    const n = (name ?? sym).toLowerCase();
-    if (n.includes("sgov") || n.includes("t-bill") || n.includes("cash") || n.includes("money")) return scenarioCatReturns.cash ?? 0;
-    if (n.includes("schp") || n.includes("tip")) return scenarioCatReturns.tips ?? 0;
-    if (n.includes("iau") || n.includes("gold")) return scenarioCatReturns.gold ?? 0;
-    if (n.includes("iemg") || n.includes("emerging")) return scenarioCatReturns.em ?? 0;
-    if (n.includes("bnd") || n.includes("bond") || n.includes("agg") || n.includes("ief")) return scenarioCatReturns.bond ?? 0;
-    if (n.includes("ixus") || n.includes("international") || n.includes("intl") || n.includes("developed")) return scenarioCatReturns.intlEquity ?? 0;
-    return scenarioCatReturns.equity ?? 0;
-  }
+  // ── Live factor exposures & stress tests (from realized price bars) ──────
+  const factorResult = computeFactorExposures(positions, barsData);
+  const factors = factorResult?.factors ?? [];
+  const hasFactorData = factorResult !== null;
 
-  const STRESS = STRESS_SCENARIOS.map((s) => {
-    const catReturns = STRESS_CATEGORY_RETURNS[s.scenario] ?? {};
-    let portfolioReturn = 0;
-    if (positions.length > 0) {
-      for (const p of positions) {
-        const wt = (p.market_value ?? 0) / totalMV;
-        portfolioReturn += wt * getCatReturn(p.symbol, p.name, catReturns);
-      }
-    } else {
-      // Fallback when no positions loaded: use generic 60/40-like estimate
-      portfolioReturn = s.bench6040 * 0.65;
-    }
-    return { ...s, portfolio: parseFloat(portfolioReturn.toFixed(1)) };
-  });
+  const stressResult = computeStressTests(positions, barsData);
+  const STRESS = (stressResult?.rows ?? []).map((s) => ({
+    ...s,
+    portfolio: parseFloat(s.portfolio.toFixed(1)),
+    bench6040: parseFloat(s.bench6040.toFixed(1)),
+    spy: parseFloat(s.spy.toFixed(1)),
+  }));
+  const hasStressData = stressResult !== null;
 
   // ── Volatility contribution from position weights × realized σ ─
   const volContrib = positions.map((p) => {
@@ -616,45 +573,56 @@ export default function RiskPage({
           <SectionHeader
             num="04"
             title="Factor Exposure"
-            right="Fama-French + Carhart (est.)"
+            right={hasFactorData ? `Regression · ${factorResult?.n} daily obs` : "Need ≥30 daily bars"}
           />
-          <div className="space-y-2">
-            {FACTORS.map((f) => {
-              const barW = (Math.abs(f.value) / 1.0) * 100;
-              return (
-                <div key={f.name} className="flex items-center gap-3">
-                  <span className="text-xs text-ink-3 w-28 shrink-0">
-                    {f.name}
-                  </span>
-                  <div className="flex-1 flex items-center gap-1 h-4 relative">
-                    <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-px bg-parchment-border" />
-                    <div className="absolute left-1/2 w-0 h-full">
-                      <div
-                        className="absolute h-3 top-0.5 rounded-sm"
-                        style={{
-                          width: `${barW * 0.5}%`,
-                          backgroundColor:
-                            f.dir >= 0 ? "#1A1611" : "#B81C1C",
-                          left: f.dir >= 0 ? 0 : `-${barW * 0.5}%`,
-                        }}
-                      />
+          {!hasFactorData ? (
+            <div className="flex items-center justify-center h-40 border border-parchment-border rounded">
+              <p className="text-ink-4 text-sm text-center px-4">
+                Factor loadings are regressed from price history — load ≥30 daily
+                bars across your holdings to compute them.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {factors.map((f) => {
+                const barW = Math.min(1, Math.abs(f.value)) * 100;
+                return (
+                  <div key={f.name} className="flex items-center gap-3">
+                    <span className="text-xs text-ink-3 w-28 shrink-0">
+                      {f.name}
+                    </span>
+                    <div className="flex-1 flex items-center gap-1 h-4 relative">
+                      <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-px bg-parchment-border" />
+                      <div className="absolute left-1/2 w-0 h-full">
+                        <div
+                          className="absolute h-3 top-0.5 rounded-sm"
+                          style={{
+                            width: `${barW * 0.5}%`,
+                            backgroundColor:
+                              f.dir >= 0 ? "#1A1611" : "#B81C1C",
+                            left: f.dir >= 0 ? 0 : `-${barW * 0.5}%`,
+                          }}
+                        />
+                      </div>
                     </div>
+                    <span
+                      className={`text-xs font-medium w-10 text-right ${f.dir >= 0 ? "text-ink" : "neg"}`}
+                    >
+                      {f.dir >= 0 ? "+" : ""}
+                      {f.value.toFixed(2)}
+                    </span>
+                    <span className="text-xs text-ink-4 w-40 hidden xl:block">
+                      {f.note}
+                    </span>
                   </div>
-                  <span
-                    className={`text-xs font-medium w-10 text-right ${f.dir >= 0 ? "text-ink" : "neg"}`}
-                  >
-                    {f.dir >= 0 ? "+" : ""}
-                    {f.value.toFixed(2)}
-                  </span>
-                  <span className="text-xs text-ink-4 w-40 hidden xl:block">
-                    {f.note}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
           <p className="text-2xs text-ink-4 mt-3">
-            Estimated from portfolio allocation weights and category-level factor loadings.
+            Standardized loadings from a ridge regression of the portfolio&apos;s daily
+            returns on factor-mimicking ETF portfolios (2-yr bars). ≈ partial
+            correlation to a 1σ factor move.
           </p>
         </div>
       </div>
@@ -663,7 +631,11 @@ export default function RiskPage({
       <SectionHeader
         num="05"
         title="Stress Tests — Historical &amp; Hypothetical"
-        right="Estimated Impact on Current Allocation"
+        right={
+          hasStressData
+            ? `Live β · SPY ${stressResult!.betaSPY.toFixed(2)} · IEF ${stressResult!.betaIEF.toFixed(2)}`
+            : "Need ≥30 daily bars"
+        }
       />
       <div className="border border-parchment-border rounded overflow-hidden">
         <table className="w-full">
@@ -688,6 +660,13 @@ export default function RiskPage({
             </tr>
           </thead>
           <tbody>
+            {!hasStressData && (
+              <tr>
+                <td colSpan={7} className="px-4 py-6 text-center text-ink-4 text-sm">
+                  Stress betas are regressed from price history — load ≥30 daily bars to compute live impacts.
+                </td>
+              </tr>
+            )}
             {STRESS.map((row) => {
               const estDollar = totalValue * (row.portfolio / 100);
               return (
@@ -741,8 +720,9 @@ export default function RiskPage({
         </table>
         <div className="px-4 py-2 bg-parchment-dark border-t border-parchment-border flex items-center gap-4">
           <span className="text-2xs text-ink-4">
-            $ impact scales with current portfolio value of $
-            {Math.round(totalValue).toLocaleString()} · Scenario % returns are historical/estimated
+            Portfolio impact = live SPY/IEF betas (regressed from 2-yr daily bars) × each scenario&apos;s
+            historical index shock · $ impact scales with current value of $
+            {Math.round(totalValue).toLocaleString()}
           </span>
         </div>
       </div>

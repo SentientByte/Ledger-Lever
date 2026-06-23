@@ -108,7 +108,9 @@ pub fn get_current_prices(
 
     for (idx, (sym, exchange)) in symbols.iter().enumerate() {
         if idx > 0 {
-            let delay_ms = 3000 + rand::random::<u64>() % 3000;
+            // Small jittered gap to stay polite to Yahoo while keeping a full
+            // refresh comfortably under the 30s live-poll window.
+            let delay_ms = 700 + rand::random::<u64>() % 700;
             std::thread::sleep(Duration::from_millis(delay_ms));
         }
 

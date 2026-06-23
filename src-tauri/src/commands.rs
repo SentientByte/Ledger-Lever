@@ -253,6 +253,19 @@ pub fn validate_symbol(symbol: String, state: tauri::State<'_, AppState>) -> Res
         .ok_or_else(|| format!("Symbol not found: {}", symbol))
 }
 
+// ── Market status ───────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_market_status() -> Result<MarketStatus, String> {
+    let et = scheduler::et_now();
+    let is_open = scheduler::is_us_market_open(et);
+    Ok(MarketStatus {
+        is_open,
+        refresh_interval_secs: if is_open { 30 } else { 300 },
+        et_time: et.format("%Y-%m-%d %H:%M:%S").to_string(),
+    })
+}
+
 // ── Manual refresh & backfill ─────────────────────────────────────────────────
 
 #[tauri::command]

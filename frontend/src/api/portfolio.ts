@@ -34,6 +34,11 @@ export const validateSymbol = (symbol: string) =>
 export const manualRefresh = () =>
   invoke<void>("manual_refresh");
 
+export const getMarketStatus = () =>
+  invoke<{ is_open: boolean; refresh_interval_secs: number; et_time: string }>(
+    "get_market_status"
+  );
+
 export const getTransactions = (params: {
   symbol?: string;
   side?: string;

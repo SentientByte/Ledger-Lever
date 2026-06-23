@@ -113,4 +113,10 @@ export interface BarData {
   close: number;
 }
 
+export interface MarketStatus {
+  is_open: boolean;
+  refresh_interval_secs: number;
+  et_time: string;
+}
+
 export type BarsResult = Record<string, BarData[]>;

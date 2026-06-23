@@ -171,6 +171,16 @@ pub struct SymbolInfo {
     pub price: f64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketStatus {
+    /// True during the US regular trading session (Mon–Fri 09:30–16:00 ET, ex-holidays).
+    pub is_open: bool,
+    /// Seconds between live price refreshes given the current market state.
+    pub refresh_interval_secs: u64,
+    /// Current US Eastern time, "YYYY-MM-DD HH:MM:SS".
+    pub et_time: String,
+}
+
 /// Raw transaction row used internally by FIFO and scheduler.
 #[derive(Debug, Clone)]
 pub struct TxnRow {

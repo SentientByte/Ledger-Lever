@@ -1,5 +1,107 @@
 import type { PerformancePoint, BarData } from "../types";
 
+// ── Trading-calendar cleaning ─────────────────────────────────────────────────
+
+/** Day-of-week (0=Sun … 6=Sat) for a "YYYY-MM-DD" string, timezone-independent. */
+function dowOf(dateStr: string): number {
+  const [y, m, d] = dateStr.slice(0, 10).split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+}
+
+/**
+ * Normalize a raw portfolio-value series into a clean daily trading-day series:
+ *
+ *  1. Collapse to one point per calendar day (latest snapshot wins).
+ *  2. Drop weekend dates — the market is closed, so any weekend point is a
+ *     reconstruction artifact.
+ *  3. De-spike partial-coverage dips: if a holding is briefly missing a price
+ *     (a cross-exchange holiday or a data gap) its value collapses for a single
+ *     day and snaps back the next. Such a point shows a value/cost ratio that
+ *     deviates sharply from both neighbours while the neighbours agree with each
+ *     other; we restore it to the neighbour-interpolated level.
+ *
+ * Holidays carry no snapshot to begin with, so they simply never appear — which
+ * is what "remove the days where exchanges were on a holiday or weekends" asks
+ * for. The result is the IBKR-style daily valuation series.
+ */
+export function cleanPerfSeries(
+  data: PerformancePoint[],
+  spikeThreshold = 0.05
+): PerformancePoint[] {
+  if (data.length === 0) return [];
+
+  const byDay = new Map<string, PerformancePoint>();
+  for (const p of data) {
+    const day = p.timestamp.slice(0, 10);
+    const existing = byDay.get(day);
+    if (!existing || p.timestamp > existing.timestamp) byDay.set(day, p);
+  }
+
+  let pts = [...byDay.values()]
+    .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+    .filter((p) => {
+      const dow = dowOf(p.timestamp);
+      return dow !== 0 && dow !== 6;
+    });
+
+  const ratio = (p: PerformancePoint) =>
+    p.total_cost > 0 ? p.total_value / p.total_cost : p.total_value;
+
+  const out = pts.map((p) => ({ ...p }));
+  for (let i = 1; i < out.length - 1; i++) {
+    const r = ratio(out[i]);
+    const rPrev = ratio(out[i - 1]);
+    const rNext = ratio(out[i + 1]);
+    if (rPrev <= 0 || rNext <= 0) continue;
+    const neighbor = (rPrev + rNext) / 2;
+    const neighborsAgree =
+      Math.abs(rPrev - rNext) / neighbor < spikeThreshold;
+    const pointDeviates = Math.abs(r - neighbor) / neighbor > spikeThreshold;
+    if (neighborsAgree && pointDeviates && out[i].total_cost > 0) {
+      out[i] = { ...out[i], total_value: neighbor * out[i].total_cost };
+    }
+  }
+  return out;
+}
+
+/**
+ * Slice the trailing `months` of a (cleaned) daily series. The base point is the
+ * last observation on/before the cutoff so the windowed return is measured in
+ * full from the window's opening level.
+ */
+export function trailingMonths(
+  data: PerformancePoint[],
+  months: number
+): PerformancePoint[] {
+  if (data.length === 0) return [];
+  const lastStr = data[data.length - 1].timestamp.slice(0, 10);
+  const [y, m, d] = lastStr.split("-").map(Number);
+  const cutoff = new Date(Date.UTC(y, m - 1 - months, d));
+  const cutStr = cutoff.toISOString().slice(0, 10);
+  let startI = 0;
+  let foundBase = false;
+  for (let i = 0; i < data.length; i++) {
+    if (data[i].timestamp.slice(0, 10) <= cutStr) {
+      startI = i;
+      foundBase = true;
+    } else {
+      break;
+    }
+  }
+  // If every point is inside the window, start at the first point.
+  return data.slice(foundBase ? startI : 0);
+}
+
+/** Last bar close on or before `date` (forward-fill lookup); null if none. */
+export function barValueOnOrBefore(bars: BarData[], date: string): number | null {
+  let best: number | null = null;
+  for (const b of bars) {
+    if (b.date <= date) best = b.close;
+    else break;
+  }
+  return best;
+}
+
 /**
  * Daily time-weighted returns.
  *

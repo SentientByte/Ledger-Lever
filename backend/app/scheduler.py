@@ -13,9 +13,9 @@ from .yfinance_service import get_current_prices, get_ticker_names, get_historic
 logger = logging.getLogger(__name__)
 _scheduler = BackgroundScheduler(timezone="UTC")
 
-_PRICE_BATCH_SIZE = 8   # symbols per yfinance batch
-_BATCH_DELAY_S = 2.0    # seconds between batches to avoid rate-limiting
-_TICKER_DELAY_S = 1.5   # seconds between individual ticker requests within a batch
+_PRICE_BATCH_SIZE = 4   # symbols per yfinance batch
+_BATCH_DELAY_S = 5.0    # seconds between batches to avoid rate-limiting
+_TICKER_DELAY_S = 3.0   # seconds between individual ticker requests within a batch
 
 
 def refresh_prices() -> None:
@@ -132,7 +132,7 @@ def backfill_historical_data() -> None:
                     logger.info("Backfill: stored %d bars for %s", count, symbol)
                 else:
                     logger.warning("Backfill: no historical bars returned for %s", symbol)
-                time.sleep(2.0)  # avoid Yahoo Finance rate limits between symbols
+                time.sleep(4.0)  # avoid Yahoo Finance rate limits between symbols
 
         # ── Step 2: pre-load all cached prices into memory ────────────────────
         all_hist: dict = {}  # {symbol: {date: close_price}}

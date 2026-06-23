@@ -7,23 +7,34 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. v0.1.1)"
+        description: "Release tag (e.g. v1.0.0)"
         required: true
-        default: "v0.1.1"
+        default: "v1.0.0"
 
 permissions:
   contents: write
 
 jobs:
   build-windows:
-    name: Build Windows installer
+    name: Build Windows installer (Tauri)
     runs-on: windows-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── Frontend build ──────────────────────────────────────────────────────
+      # ── Rust toolchain ──────────────────────────────────────────────────────
+      - name: Set up Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust build artefacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # ── Node / frontend ─────────────────────────────────────────────────────
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -35,35 +46,25 @@ jobs:
         working-directory: frontend
         run: npm ci
 
-      - name: Build frontend
-        working-directory: frontend
-        run: npm run build
-        env:
-          VITE_API_BASE: ""   # API calls go to same origin in standalone mode
-
-      # ── Python / PyInstaller build ──────────────────────────────────────────
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
-
-      - name: Install Python dependencies
+      # ── Generate app icons from SVG source ─────────────────────────────────
+      - name: Generate app icons
+        shell: pwsh
         run: |
-          pip install -r backend/requirements.txt
-          pip install pyinstaller
+          pip install pillow cairosvg --quiet
+          python - <<'PYEOF'
+          import cairosvg, subprocess, os, shutil
 
-      - name: Build exe with PyInstaller
-        run: pyinstaller ledger_lever.spec --clean --noconfirm
+          svg_path = "src-tauri/icons/app-icon.svg"
+          png_path = "src-tauri/icons/app-icon.png"
+          cairosvg.svg2png(url=svg_path, write_to=png_path, output_width=512, output_height=512)
+          print(f"Generated {png_path}")
+          PYEOF
 
-      # ── Installer (Inno Setup) ──────────────────────────────────────────────
-      - name: Install Inno Setup
-        run: choco install innosetup --no-progress -y
+          # Use Tauri CLI to generate all required icon sizes
+          cd frontend
+          npx @tauri-apps/cli@latest icon ../src-tauri/icons/app-icon.png --output ../src-tauri/icons
 
-      - name: Build installer
-        run: iscc installer.iss
-
-      # ── Create GitHub Release ───────────────────────────────────────────────
+      # ── Determine release tag ───────────────────────────────────────────────
       - name: Determine tag name
         id: tag
         shell: bash
@@ -74,31 +75,33 @@ jobs:
             echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Create GitHub Release and upload assets
-        uses: softprops/action-gh-release@v2
+      # ── Build & bundle with Tauri ───────────────────────────────────────────
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ""
         with:
-          tag_name: ${{ steps.tag.outputs.name }}
-          name: "Ledger Lever ${{ steps.tag.outputs.name }}"
-          body: |
+          tagName: ${{ steps.tag.outputs.name }}
+          releaseName: "Ledger Lever ${{ steps.tag.outputs.name }}"
+          releaseBody: |
             ## Ledger Lever ${{ steps.tag.outputs.name }}
 
             ### What's new
-            - Windows desktop release: self-contained `.exe` installer, no Docker or Python required.
-            - Single installer places a desktop shortcut and Start Menu entry.
-            - Portfolio data stored in `%USERPROFILE%\LedgerLever\portfolio.db`.
+            - Native Windows desktop app — no Docker, no Python, no browser tab required.
+            - Fully self-contained: Rust backend + React UI bundled in a single installer.
+            - Portfolio data stored in `%APPDATA%\com.ledgerlever.app\portfolio.db`.
 
             ### Installation
-            1. Download **LedgerLever-Setup-v0.1.1.exe** below.
+            1. Download **Ledger Lever_${{ steps.tag.outputs.name }}_x64-setup.exe** or the `.msi` below.
             2. Run the installer and follow the prompts.
-            3. Launch **Ledger Lever** from the desktop shortcut — a browser tab opens automatically at `http://localhost:8000`.
+            3. Launch **Ledger Lever** from the desktop shortcut or Start Menu.
 
             ### Notes
             - Requires Windows 10 or later (64-bit).
-            - Internet access is needed to fetch live prices from Yahoo Finance.
-            - To uninstall, use *Add or Remove Programs*.
-          draft: false
+            - Internet access is needed for live prices from Yahoo Finance.
+            - Prices auto-refresh every 5 minutes in the background.
+          releaseDraft: false
           prerelease: false
-          files: |
-            Output/LedgerLever-Setup-v0.1.1.exe
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          projectPath: src-tauri
+          tauriScript: npx @tauri-apps/cli@latest

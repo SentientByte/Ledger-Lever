@@ -173,7 +173,7 @@ pub fn backfill_historical_data(client: &Client, db: &Arc<Mutex<Connection>>, cr
         };
         let needs_fetch = match &oldest {
             None => true,
-            Some(d) => d.as_str() > &days_ago_date(BACKFILL_START_DAYS - 7),
+            Some(d) => d.as_str() > days_ago_date(BACKFILL_START_DAYS - 7).as_str(),
         };
         if needs_fetch {
             info!("Backfill: fetching history for {} (oldest={:?})", symbol, oldest);

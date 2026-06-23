@@ -8,6 +8,7 @@ mod yahoo;
 
 use commands::AppState;
 use rusqlite::Connection;
+use tauri::Manager;
 use std::sync::Arc;
 
 pub fn run() {

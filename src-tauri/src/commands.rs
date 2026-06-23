@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use reqwest::blocking::Client;
 use rusqlite::Connection;
-use crate::{crud, fifo, yahoo, scheduler};
+use crate::{crud, yahoo, scheduler};
 use crate::models::*;
 
 pub struct AppState {

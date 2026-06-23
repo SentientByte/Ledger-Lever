@@ -46,16 +46,8 @@ jobs:
         working-directory: frontend
         run: npm ci
 
-      # ── Generate app icons from SVG source ─────────────────────────────────
-      - name: Generate app icons
-        shell: pwsh
-        run: |
-          pip install pillow cairosvg --quiet
-          python -c "import cairosvg; cairosvg.svg2png(url='src-tauri/icons/app-icon.svg', write_to='src-tauri/icons/app-icon.png', output_width=512, output_height=512); print('Generated src-tauri/icons/app-icon.png')"
-
-          # Use Tauri CLI to generate all required icon sizes
-          cd frontend
-          npx @tauri-apps/cli@latest icon ../src-tauri/icons/app-icon.png --output ../src-tauri/icons
+      # Note: app icons are pre-rendered and committed under src-tauri/icons.
+      # See src-tauri/icons/README.md to regenerate them from app-icon.svg.
 
       # ── Determine release tag ───────────────────────────────────────────────
       - name: Determine tag name

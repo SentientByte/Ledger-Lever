@@ -1,4 +1,5 @@
 import logging
+import random
 import time
 from typing import Dict, List, Optional
 
@@ -133,7 +134,7 @@ def get_current_prices(
     tickers = list(yf_ticker_to_sym.items())
     for idx, (yf_ticker, sym) in enumerate(tickers):
         if idx > 0:
-            time.sleep(3.0)
+            time.sleep(random.uniform(5.0, 8.0))
         for attempt in range(3):
             try:
                 ticker = yf.Ticker(yf_ticker)

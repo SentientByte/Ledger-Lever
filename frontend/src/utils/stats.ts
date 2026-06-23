@@ -1,10 +1,46 @@
 import type { PerformancePoint, BarData } from "../types";
 
+/**
+ * Daily time-weighted returns.
+ *
+ * The portfolio value series is contaminated by external cash flows (buys add
+ * money, sells remove it). The day-over-day change in `total_cost` (cost basis)
+ * is the external flow for that day, so we strip it out before computing the
+ * return — the same time-weighted approach IBKR uses for portfolio performance.
+ */
 export function dailyReturns(data: PerformancePoint[]): number[] {
   return data.slice(1).map((d, i) => {
     const prev = data[i].total_value;
-    return prev > 0 ? (d.total_value - prev) / prev : 0;
+    const flow = (d.total_cost ?? 0) - (data[i].total_cost ?? 0);
+    return prev > 0 ? (d.total_value - flow - prev) / prev : 0;
   });
+}
+
+/**
+ * Cumulative time-weighted return index, based at 100 on the first point.
+ * Aligned 1:1 with `data` (same length). This is the IBKR-style portfolio
+ * performance curve: external contributions/withdrawals are removed so the
+ * line reflects investment performance only, not deposits.
+ */
+export function twrIndex(data: PerformancePoint[]): number[] {
+  if (data.length === 0) return [];
+  const idx = [100];
+  for (let i = 1; i < data.length; i++) {
+    const v0 = data[i - 1].total_value;
+    const flow = (data[i].total_cost ?? 0) - (data[i - 1].total_cost ?? 0);
+    const r = v0 > 0 ? (data[i].total_value - flow - v0) / v0 : 0;
+    idx.push(idx[i - 1] * (1 + r));
+  }
+  return idx;
+}
+
+/** Time-weighted total return over the full window, as a percentage. */
+export function twrTotalReturnPct(data: PerformancePoint[]): number | null {
+  if (data.length < 2) return null;
+  const idx = twrIndex(data);
+  const base = idx[0];
+  if (!(base > 0)) return null;
+  return (idx[idx.length - 1] / base - 1) * 100;
 }
 
 export function stdDev(values: number[]): number {
@@ -15,20 +51,25 @@ export function stdDev(values: number[]): number {
   return Math.sqrt(variance);
 }
 
-/** Peak-to-trough max drawdown as a negative percentage (e.g. -7.4) */
+/**
+ * Peak-to-trough max drawdown as a negative percentage (e.g. -7.4).
+ * Computed on the time-weighted index so contributions don't masquerade as
+ * recoveries (and withdrawals don't masquerade as drawdowns).
+ */
 export function maxDrawdownPct(data: PerformancePoint[]): number {
   if (data.length < 2) return 0;
-  let peak = data[0].total_value;
+  const idx = twrIndex(data);
+  let peak = idx[0];
   let maxDD = 0;
-  for (const d of data) {
-    if (d.total_value > peak) peak = d.total_value;
-    const dd = peak > 0 ? (d.total_value - peak) / peak : 0;
+  for (const v of idx) {
+    if (v > peak) peak = v;
+    const dd = peak > 0 ? (v - peak) / peak : 0;
     if (dd < maxDD) maxDD = dd;
   }
   return maxDD * 100;
 }
 
-/** Annualized return over the full data window, as a percentage. */
+/** Annualized time-weighted return over the full data window, as a percentage. */
 export function annualizedReturnPct(data: PerformancePoint[]): number | null {
   if (data.length < 2) return null;
   const first = data[0];
@@ -36,8 +77,11 @@ export function annualizedReturnPct(data: PerformancePoint[]): number | null {
   const days =
     (new Date(last.timestamp).getTime() - new Date(first.timestamp).getTime()) /
     86_400_000;
-  if (days < 1 || first.total_value <= 0) return null;
-  return (Math.pow(last.total_value / first.total_value, 365 / days) - 1) * 100;
+  if (days < 1) return null;
+  const idx = twrIndex(data);
+  const growth = idx[0] > 0 ? idx[idx.length - 1] / idx[0] : 0;
+  if (!(growth > 0)) return null;
+  return (Math.pow(growth, 365 / days) - 1) * 100;
 }
 
 /** Annualized Sharpe ratio. Requires ≥20 return observations. */
@@ -103,13 +147,16 @@ export function monthlyReturns(
   data: PerformancePoint[],
   maxMonths = 24
 ): { label: string; pct: number }[] {
+  if (data.length < 2) return [];
+  // Time-weighted index so within-month flows don't distort the monthly return.
+  const idx = twrIndex(data);
   const byMonth: Record<string, { first: number; last: number }> = {};
-  for (const d of data) {
+  data.forEach((d, i) => {
     const dt = new Date(d.timestamp);
     const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}`;
-    if (!byMonth[key]) byMonth[key] = { first: d.total_value, last: d.total_value };
-    else byMonth[key].last = d.total_value;
-  }
+    if (!byMonth[key]) byMonth[key] = { first: idx[i], last: idx[i] };
+    else byMonth[key].last = idx[i];
+  });
   return Object.entries(byMonth)
     .sort(([a], [b]) => a.localeCompare(b))
     .slice(-maxMonths)
@@ -132,6 +179,7 @@ export function periodReturn(
   period: "MTD" | "QTD" | "YTD"
 ): number | null {
   if (data.length < 2) return null;
+  const idx = twrIndex(data);
   const last = data[data.length - 1];
   const now = new Date(last.timestamp);
   let startDate: Date;
@@ -143,10 +191,16 @@ export function periodReturn(
   } else {
     startDate = new Date(now.getFullYear(), 0, 1);
   }
-  // Find the closest data point on or just after startDate
-  const startPt = data.find((d) => new Date(d.timestamp) >= startDate);
-  if (!startPt || startPt.total_value === 0) return null;
-  return ((last.total_value - startPt.total_value) / startPt.total_value) * 100;
+  // Anchor on the last point *before* the period starts so the period's own
+  // return is measured in full; fall back to the first in-period point.
+  let startI = -1;
+  for (let i = 0; i < data.length; i++) {
+    if (new Date(data[i].timestamp) < startDate) startI = i;
+    else break;
+  }
+  if (startI < 0) startI = data.findIndex((d) => new Date(d.timestamp) >= startDate);
+  if (startI < 0 || !(idx[startI] > 0)) return null;
+  return (idx[idx.length - 1] / idx[startI] - 1) * 100;
 }
 
 /** Calmar ratio = annualized return / |max drawdown| */
@@ -173,6 +227,42 @@ export function barVol(bars: BarData[]): number | null {
   const rets = barsToReturns(bars);
   if (rets.length < 20) return null;
   return stdDev(rets) * Math.sqrt(252) * 100;
+}
+
+/** Fallback long-run annualized volatility (%) when bar data is insufficient. */
+export const SYMBOL_VOL_FALLBACK: Record<string, number> = {
+  VTI: 17.2, IXUS: 16.1, IEMG: 22.0, BND: 5.8, IEF: 8.5,
+  SCHP: 7.2, USMV: 12.8, IAU: 15.4, SGOV: 0.5,
+};
+
+/**
+ * Portfolio annualized volatility as the market-value-weighted average of each
+ * holding's realized ticker volatility (from price bars, or a fallback). This
+ * reflects the volatility of the invested assets — unlike a vol computed from
+ * the portfolio cash-value series, which is distorted by deposits/withdrawals.
+ */
+export function weightedAnnVol(
+  positions: { symbol: string; market_value: number | null }[],
+  bars: Record<string, BarData[]>
+): number | null {
+  let totalMV = 0;
+  for (const p of positions) totalMV += p.market_value ?? 0;
+  if (totalMV <= 0) return null;
+
+  let acc = 0;
+  let coveredWeight = 0;
+  for (const p of positions) {
+    const mv = p.market_value ?? 0;
+    if (mv <= 0) continue;
+    const sym = p.symbol.toUpperCase();
+    const sigma = barVol(bars[sym] ?? []) ?? SYMBOL_VOL_FALLBACK[sym];
+    if (sigma == null) continue;
+    const w = mv / totalMV;
+    acc += w * sigma;
+    coveredWeight += w;
+  }
+  // Renormalize over the weight we could actually measure.
+  return coveredWeight > 0 ? acc / coveredWeight : null;
 }
 
 /** Pearson correlation between two return series aligned by length. */

@@ -311,6 +311,17 @@ pub fn get_all_transactions_sorted(conn: &Connection) -> Result<Vec<TxnRow>> {
     rows.collect()
 }
 
+/// Net capital invested = total cash paid for buys (incl. commission) minus
+/// net proceeds received from sells. Equals -SUM(net) since `net` is negative
+/// for buys and positive for sells.
+pub fn get_net_invested(conn: &Connection) -> Result<f64> {
+    conn.query_row(
+        "SELECT -COALESCE(SUM(net), 0) FROM transactions",
+        [],
+        |r| r.get(0),
+    )
+}
+
 pub fn get_transaction_symbols(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT DISTINCT symbol FROM transactions ORDER BY symbol"

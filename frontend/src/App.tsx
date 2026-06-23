@@ -4,7 +4,6 @@ import OverviewPage from "./pages/OverviewPage";
 import HoldingsPage from "./pages/HoldingsPage";
 import RiskPage from "./pages/RiskPage";
 import PerformancePage from "./pages/PerformancePage";
-import PlaceholderPage from "./pages/PlaceholderPage";
 import DocumentsPage from "./pages/DocumentsPage";
 import TransactionsPage from "./pages/TransactionsPage";
 import AddPositionModal from "./components/AddPositionModal";
@@ -123,7 +122,6 @@ export default function App() {
         {activeTab === "RISK" && <RiskPage {...commonProps} />}
         {activeTab === "PERFORMANCE" && <PerformancePage {...commonProps} />}
         {activeTab === "TRANSACTIONS" && <TransactionsPage />}
-        {activeTab === "INCOME" && <PlaceholderPage title="Income" subtitle="Distribution income register coming soon." />}
         {activeTab === "DOCUMENTS" && <DocumentsPage />}
       </main>
 

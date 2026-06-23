@@ -1,4 +1,4 @@
-type Tab = "OVERVIEW" | "HOLDINGS" | "RISK" | "PERFORMANCE" | "TRANSACTIONS" | "INCOME" | "DOCUMENTS";
+type Tab = "OVERVIEW" | "HOLDINGS" | "RISK" | "PERFORMANCE" | "TRANSACTIONS" | "DOCUMENTS";
 
 interface Props {
   activeTab: Tab;
@@ -6,7 +6,7 @@ interface Props {
   lastUpdated: string | null;
 }
 
-const TABS: Tab[] = ["OVERVIEW", "HOLDINGS", "RISK", "PERFORMANCE", "TRANSACTIONS", "INCOME", "DOCUMENTS"];
+const TABS: Tab[] = ["OVERVIEW", "HOLDINGS", "RISK", "PERFORMANCE", "TRANSACTIONS", "DOCUMENTS"];
 
 function fmtTime(iso: string | null) {
   if (!iso) return "—";

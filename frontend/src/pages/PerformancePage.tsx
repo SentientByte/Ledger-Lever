@@ -24,6 +24,7 @@ import {
   maxDrawdownPct,
   barPeriodReturn,
   indexBars,
+  twrTotalReturnPct,
 } from "../utils/stats";
 
 ChartJS.register(
@@ -88,19 +89,15 @@ export default function PerformancePage({
   barsData,
   loading,
 }: Props) {
-  const totalValue = summary?.total_value ?? 0;
-  const totalCost = summary?.total_cost ?? 0;
-
-  // ── Computed period returns from real perfData ────────────
+  // ── Computed period returns from real perfData (time-weighted) ────────────
   const mtd = periodReturn(perfData, "MTD");
   const qtd = periodReturn(perfData, "QTD");
   const ytd = periodReturn(perfData, "YTD");
   const annRet = annualizedReturnPct(perfData);
   const maxDD = perfData.length >= 2 ? maxDrawdownPct(perfData) : null;
 
-  // Total return since inception (cost basis perspective)
-  const totalReturnPct =
-    totalCost > 0 ? ((totalValue - totalCost) / totalCost) * 100 : null;
+  // Total return since inception — time-weighted (IBKR-style), flow-adjusted.
+  const totalReturnPct = twrTotalReturnPct(perfData);
 
   // Monthly returns from perfData (last 12 months)
   const computedMonthly = monthlyReturns(perfData, 12);
@@ -599,7 +596,7 @@ export default function PerformancePage({
               invested !== null
                 ? `$${Math.round(invested).toLocaleString()}`
                 : "—",
-            sub: "Sum of all buy notionals + commissions",
+            sub: "Net capital deployed (buys − sells, incl. commissions)",
           },
           {
             label: "Realized P&L",

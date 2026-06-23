@@ -20,12 +20,13 @@ import {
   calmarRatio,
   historicalVaR,
   historicalCVaR,
-  annualizedVol,
   annualizedReturnPct,
-  barsToReturns,
   barVol,
   corrCoef,
   alignBarsReturns,
+  twrIndex,
+  weightedAnnVol,
+  SYMBOL_VOL_FALLBACK,
 } from "../utils/stats";
 
 ChartJS.register(
@@ -79,18 +80,15 @@ function sign(n: number) {
 
 function toDrawdown(data: PerformancePoint[]) {
   if (data.length === 0) return [];
-  let peak = data[0].total_value;
-  return data.map((d) => {
-    if (d.total_value > peak) peak = d.total_value;
-    return peak > 0 ? ((d.total_value - peak) / peak) * 100 : 0;
+  // Underwater curve from the time-weighted index so contributions/withdrawals
+  // don't distort the peak-to-trough path.
+  const idx = twrIndex(data);
+  let peak = idx[0];
+  return idx.map((v) => {
+    if (v > peak) peak = v;
+    return peak > 0 ? ((v - peak) / peak) * 100 : 0;
   });
 }
-
-// Fallback long-run volatility estimates when bar data is insufficient
-const SYMBOL_VOL_FALLBACK: Record<string, number> = {
-  VTI: 17.2, IXUS: 16.1, IEMG: 22.0, BND: 5.8, IEF: 8.5,
-  SCHP: 7.2, USMV: 12.8, IAU: 15.4, SGOV: 0.5,
-};
 
 function corrColor(v: number) {
   if (v >= 0.7) return "#1A1611";
@@ -140,6 +138,8 @@ export default function RiskPage({
   loading,
 }: Props) {
   const totalValue = summary?.total_value ?? 0;
+  const totalMV =
+    positions.reduce((s, p) => s + (p.market_value ?? 0), 0) || 1;
 
   // ── Per-symbol realized vol from historical bars ──────────
   const symbolVol: Record<string, number> = {};
@@ -170,7 +170,9 @@ export default function RiskPage({
 
   const varPct = historicalVaR(rets, 0.95);
   const cvarPct = historicalCVaR(rets, 0.95);
-  const volPct = annualizedVol(rets);
+  // Volatility from per-ticker realized σ weighted by position market value,
+  // not from the (cash-flow-distorted) portfolio value series.
+  const volPct = weightedAnnVol(positions, barsData);
   const sharpe = sharpeRatio(rets);
   const sortino = sortinoRatio(rets);
   const calmar = calmarRatio(perfData);
@@ -367,8 +369,6 @@ export default function RiskPage({
   });
 
   // ── Volatility contribution from position weights × realized σ ─
-  const totalMV =
-    positions.reduce((s, p) => s + (p.market_value ?? 0), 0) || 1;
   const volContrib = positions.map((p) => {
     const wt = (p.market_value ?? 0) / totalMV;
     const sigmaEst = symbolVol[p.symbol.toUpperCase()] ?? 15.0;
@@ -456,7 +456,7 @@ export default function RiskPage({
               {volPct !== null ? `${fmt(volPct, 1)}%` : "—"}
             </p>
             <p className="text-ink-4 text-xs mt-0.5">
-              {volPct !== null ? "From price snapshots" : "Need ≥20 snapshots"}
+              {volPct !== null ? "Weighted ticker σ" : "Need price bars"}
             </p>
           </div>
         </div>

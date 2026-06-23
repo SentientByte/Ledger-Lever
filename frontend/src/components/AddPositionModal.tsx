@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { X, Loader2 } from "lucide-react";
 import { addPosition, updatePosition, validateSymbol } from "../api/portfolio";
-import type { Position, PositionCreate } from "../types";
+import type { Position } from "../types";
 
 interface Props {
   editing: Position | null;
@@ -55,11 +55,10 @@ export default function AddPositionModal({ editing, onClose, onSaved }: Props) {
     setSaving(true);
     try {
       if (editing) {
-        await updatePosition(editing.id, { shares: sharesNum, avg_cost: costNum });
+        await updatePosition(editing.id, sharesNum, costNum);
       } else {
         if (!symbolInfo) { setError("Please wait for symbol validation"); setSaving(false); return; }
-        const body: PositionCreate = { symbol: symbol.toUpperCase(), shares: sharesNum, avg_cost: costNum };
-        await addPosition(body);
+        await addPosition(symbol.toUpperCase(), sharesNum, costNum);
       }
       onSaved();
       onClose();

@@ -44,6 +44,7 @@ pub fn run() {
             commands::validate_symbol,
             commands::manual_refresh,
             commands::trigger_backfill,
+            commands::get_market_status,
             commands::get_transactions,
             commands::get_transaction_symbols,
             commands::get_derived_positions,

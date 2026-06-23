@@ -180,6 +180,18 @@ pub fn bulk_save_portfolio_snapshots(conn: &Connection, snapshots: &[(f64, f64, 
     Ok(())
 }
 
+/// Remove backfill-reconstructed snapshots (saved at the 16:00 close) within the
+/// window so they can be regenerated cleanly. Live intraday snapshots — which
+/// carry a real day_gain and a non-16:00:00 timestamp — are preserved.
+pub fn clear_reconstructed_snapshots(conn: &Connection, since: &str) -> Result<usize> {
+    let n = conn.execute(
+        "DELETE FROM portfolio_snapshots
+         WHERE timestamp >= ?1 AND timestamp LIKE '% 16:00:00' AND day_gain = 0",
+        params![since],
+    )?;
+    Ok(n)
+}
+
 pub fn get_existing_snapshot_dates(conn: &Connection, since: &str) -> Result<std::collections::HashSet<String>> {
     let mut stmt = conn.prepare(
         "SELECT DISTINCT substr(timestamp,1,10) FROM portfolio_snapshots WHERE timestamp >= ?1"

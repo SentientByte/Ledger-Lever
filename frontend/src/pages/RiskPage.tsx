@@ -26,8 +26,10 @@ import {
   alignBarsReturns,
   twrIndex,
   weightedAnnVol,
+  cleanPerfSeries,
   SYMBOL_VOL_FALLBACK,
 } from "../utils/stats";
+import MonteCarloSimulator from "../components/MonteCarloSimulator";
 
 ChartJS.register(
   CategoryScale,
@@ -164,8 +166,12 @@ export default function RiskPage({
   });
   const hasCorrData = portfolioSymbols.length >= 2 && (barsData[portfolioSymbols[0]] ?? []).length >= 20;
 
-  // ── Computed risk metrics from perfData ──────────────────
-  const rets = dailyReturns(perfData);
+  // ── Computed risk metrics from the cleaned perf series ───
+  // Cleaned = one point per trading day, weekends dropped, holiday/data-gap dips
+  // repaired — so VaR, drawdown and ratios aren't corrupted by reconstruction
+  // artifacts.
+  const cleanPerf = cleanPerfSeries(perfData);
+  const rets = dailyReturns(cleanPerf);
   const hasEnoughData = rets.length >= 20;
 
   const varPct = historicalVaR(rets, 0.95);
@@ -175,18 +181,18 @@ export default function RiskPage({
   const volPct = weightedAnnVol(positions, barsData);
   const sharpe = sharpeRatio(rets);
   const sortino = sortinoRatio(rets);
-  const calmar = calmarRatio(perfData);
-  const maxDD = perfData.length >= 2 ? maxDrawdownPct(perfData) : null;
-  const annRet = annualizedReturnPct(perfData);
+  const calmar = calmarRatio(cleanPerf);
+  const maxDD = cleanPerf.length >= 2 ? maxDrawdownPct(cleanPerf) : null;
+  const annRet = annualizedReturnPct(cleanPerf);
 
   // Drawdown chart
-  const ddValues = toDrawdown(perfData);
+  const ddValues = toDrawdown(cleanPerf);
   const bench40dd = ddValues.map((v) => v * 1.85);
 
   const ddChartData = {
-    labels: perfData.map((d, i) => {
+    labels: cleanPerf.map((_, i) => {
       const mo = Math.round(
-        (perfData.length - 1 - i) / (perfData.length / 24)
+        (cleanPerf.length - 1 - i) / (cleanPerf.length / 24)
       );
       return mo > 0 ? `M-${mo}` : "Now";
     }),
@@ -474,7 +480,7 @@ export default function RiskPage({
             className="bg-card-bg border border-parchment-border rounded"
             style={{ height: 220 }}
           >
-            {perfData.length < 2 ? (
+            {cleanPerf.length < 2 ? (
               <div className="flex items-center justify-center h-full">
                 <p className="text-ink-4 text-sm">No performance history yet.</p>
               </div>
@@ -989,6 +995,19 @@ export default function RiskPage({
           )}
         </div>
       )}
+
+      {/* §08 Monte-Carlo Outcome Simulator */}
+      <SectionHeader
+        num="08"
+        title="Monte-Carlo Outcome Simulator"
+        right="12-Month Forward · GBM + macro scenarios"
+      />
+      <p className="text-ink-3 text-sm leading-relaxed max-w-2xl mb-4">
+        Forward-looking scenario distributions for your live holdings. Re-weight a
+        proposed portfolio and compare its risk/return profile side-by-side. Per-asset
+        σ and β come from realized 2-yr price bars; correlations from daily returns.
+      </p>
+      <MonteCarloSimulator positions={positions} barsData={barsData} />
 
       {/* Bottom bar */}
       <div className="mt-12 pt-4 border-t border-parchment-border flex items-center justify-between">

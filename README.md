@@ -1,6 +1,6 @@
 # Ledger Lever — Portfolio Dashboard
 
-A real-time personal portfolio tracking dashboard with live prices from Yahoo Finance, historical data storage, and auto-refresh every 60 seconds.
+A real-time personal portfolio tracking dashboard with live prices from Yahoo Finance, historical data storage, and market-aware auto-refresh (every 30 seconds while the US market is open, 5 minutes when closed).
 
 ## Stack
 
@@ -13,14 +13,16 @@ A real-time personal portfolio tracking dashboard with live prices from Yahoo Fi
 
 ## Features
 
-- **Live prices** pulled from Yahoo Finance, refreshed every 60 seconds automatically
+- **Live prices** pulled from Yahoo Finance, refreshed every 30 seconds while the US market is open (Mon–Fri 09:30–16:00 ET, excluding holidays) and every 5 minutes when closed
 - **Portfolio summary** — total value, day P&L, total P&L with percentages
-- **Performance chart** — portfolio value vs cost basis over 1W / 1M / 3M / 1Y
-- **Allocation chart** — donut chart with per-position breakdown
+- **Trailing-12-month total return** — time-weighted (IBKR "performance %" methodology), benchmarked against the S&P 500 (SPY) and Nasdaq-100 (QQQ), with weekend/holiday gaps removed and partial-coverage dips repaired
+- **Performance indicators** — MTD / QTD / YTD / since-inception, all time-weighted off a cleaned trading-day series
+- **Allocation chart** — per-position breakdown by market value
 - **Holdings table** — sortable, shows price, day range, day gain, total return
+- **Risk ledger** — VaR/CVaR, drawdown, correlation matrix, factor & stress tests, plus a **Monte-Carlo outcome simulator** (GBM with realized σ/β/correlations from price history, adjustable rate/macro/bubble/oil/gold scenarios, and current-vs-proposed comparison)
 - **Add / Edit / Remove** positions with real-time symbol validation
 - **Historical data** stored in SQLite so charts persist across restarts
-- **Manual refresh** button + countdown timer
+- **Manual refresh** button
 
 ## Quick Start
 

@@ -1,9 +1,12 @@
+import type { MarketStatus } from "../types";
+
 type Tab = "OVERVIEW" | "HOLDINGS" | "RISK" | "PERFORMANCE" | "TRANSACTIONS" | "DOCUMENTS";
 
 interface Props {
   activeTab: Tab;
   onTabChange: (t: Tab) => void;
   lastUpdated: string | null;
+  marketStatus?: MarketStatus | null;
 }
 
 const TABS: Tab[] = ["OVERVIEW", "HOLDINGS", "RISK", "PERFORMANCE", "TRANSACTIONS", "DOCUMENTS"];
@@ -22,10 +25,16 @@ function fmtDate(iso: string | null) {
 
 export type { Tab };
 
-export default function Header({ activeTab, onTabChange, lastUpdated }: Props) {
+export default function Header({ activeTab, onTabChange, lastUpdated, marketStatus }: Props) {
   const now = new Date();
   const timeStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false }) + " ET";
   const dateStr = now.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  const isOpen = marketStatus?.is_open ?? false;
+  const marketLabel = marketStatus
+    ? isOpen
+      ? `Open · refresh ${marketStatus.refresh_interval_secs}s`
+      : "Closed"
+    : "—";
 
   return (
     <header className="bg-parchment border-b border-parchment-border sticky top-0 z-40">
@@ -67,9 +76,11 @@ export default function Header({ activeTab, onTabChange, lastUpdated }: Props) {
 
         {/* Live indicator + date */}
         <div className="flex items-center gap-2 px-4 border-l border-parchment-border shrink-0">
-          <span className="inline-block w-1.5 h-1.5 rounded-full bg-positive" />
+          <span
+            className={`inline-block w-1.5 h-1.5 rounded-full ${isOpen ? "bg-positive animate-pulse" : "bg-ink-4"}`}
+          />
           <span className="section-label whitespace-nowrap">
-            Live&nbsp;·&nbsp;NYSE {timeStr}&nbsp;&nbsp;{dateStr}
+            NYSE {marketLabel}&nbsp;·&nbsp;{timeStr}&nbsp;&nbsp;{dateStr}
           </span>
         </div>
 

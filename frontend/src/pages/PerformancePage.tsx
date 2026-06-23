@@ -25,6 +25,7 @@ import {
   barPeriodReturn,
   indexBars,
   twrTotalReturnPct,
+  cleanPerfSeries,
 } from "../utils/stats";
 
 ChartJS.register(
@@ -89,18 +90,25 @@ export default function PerformancePage({
   barsData,
   loading,
 }: Props) {
-  // ── Computed period returns from real perfData (time-weighted) ────────────
-  const mtd = periodReturn(perfData, "MTD");
-  const qtd = periodReturn(perfData, "QTD");
-  const ytd = periodReturn(perfData, "YTD");
-  const annRet = annualizedReturnPct(perfData);
-  const maxDD = perfData.length >= 2 ? maxDrawdownPct(perfData) : null;
+  // Clean the raw series first: collapse to one point per trading day, drop
+  // weekends, and repair partial-coverage (holiday/data-gap) dips. All the
+  // period indicators below are time-weighted (IBKR-style) off this series, so
+  // MTD/QTD/YTD/Since-Inception reflect investment performance, not the data
+  // artifacts that previously distorted them.
+  const cleanPerf = cleanPerfSeries(perfData);
+
+  // ── Computed period returns from cleaned perf series (time-weighted) ───────
+  const mtd = periodReturn(cleanPerf, "MTD");
+  const qtd = periodReturn(cleanPerf, "QTD");
+  const ytd = periodReturn(cleanPerf, "YTD");
+  const annRet = annualizedReturnPct(cleanPerf);
+  const maxDD = cleanPerf.length >= 2 ? maxDrawdownPct(cleanPerf) : null;
 
   // Total return since inception — time-weighted (IBKR-style), flow-adjusted.
-  const totalReturnPct = twrTotalReturnPct(perfData);
+  const totalReturnPct = twrTotalReturnPct(cleanPerf);
 
-  // Monthly returns from perfData (last 12 months)
-  const computedMonthly = monthlyReturns(perfData, 12);
+  // Monthly returns from the cleaned series (last 12 months)
+  const computedMonthly = monthlyReturns(cleanPerf, 12);
 
   // Real benchmark bars
   const spyBars = barsData["SPY"] ?? [];
@@ -177,28 +185,28 @@ export default function PerformancePage({
     },
   ];
 
-  // Rolling 12-month chart from perfData
-  const rollingLabels = perfData.map((_, i) => {
+  // Rolling 12-month chart from the cleaned series
+  const rollingLabels = cleanPerf.map((_, i) => {
     const mo = Math.round(
-      (perfData.length - 1 - i) / (perfData.length / 36)
+      (cleanPerf.length - 1 - i) / (cleanPerf.length / 36)
     );
     return mo > 0 ? `M-${mo}` : "Now";
   });
-  const rollingPort = perfData.map((d, i) => {
+  const rollingPort = cleanPerf.map((d, i) => {
     if (i < 12) return null;
-    const prev = perfData[i - 12];
+    const prev = cleanPerf[i - 12];
     return prev.total_value > 0
       ? ((d.total_value - prev.total_value) / prev.total_value) * 100
       : null;
   });
 
-  // Real SPY rolling 12-month return aligned with perfData dates
-  const perfStartDate = perfData.length > 0 ? perfData[0].timestamp.slice(0, 10) : "";
+  // Real SPY rolling 12-month return aligned with cleaned-series dates
+  const perfStartDate = cleanPerf.length > 0 ? cleanPerf[0].timestamp.slice(0, 10) : "";
   const indexedSpy = perfStartDate ? indexBars(spyBars, perfStartDate) : [];
   const spyByDate = new Map(indexedSpy.map((b) => [b.date, b.value]));
-  const rollingBench = perfData.map((d, i) => {
+  const rollingBench = cleanPerf.map((d, i) => {
     if (i < 12) return null;
-    const prev = perfData[i - 12];
+    const prev = cleanPerf[i - 12];
     const dateNow = d.timestamp.slice(0, 10);
     const datePrev = prev.timestamp.slice(0, 10);
     // Find nearest SPY value for this date
@@ -521,7 +529,7 @@ export default function PerformancePage({
             className="bg-card-bg border border-parchment-border rounded"
             style={{ height: 220 }}
           >
-            {perfData.length < 14 ? (
+            {cleanPerf.length < 14 ? (
               <div className="flex items-center justify-center h-full">
                 <p className="text-ink-4 text-sm">
                   Need 13+ months of price snapshot history.

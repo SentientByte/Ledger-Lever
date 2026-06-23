@@ -23,7 +23,9 @@ import {
   weightedAnnVol,
   twrIndex,
   twrTotalReturnPct,
-  indexBars,
+  cleanPerfSeries,
+  trailingMonths,
+  barValueOnOrBefore,
 } from "../utils/stats";
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, Tooltip, Legend);
@@ -118,15 +120,18 @@ export default function OverviewPage({
   const unrealizedPnl = txnSummary?.unrealized ?? totalGain;
   const totalInvested = txnSummary?.invested ?? totalCost;
 
+  // Cleaned daily trading-day series (weekends/holiday dips removed).
+  const cleanPerf = cleanPerfSeries(perfData);
+
   // Risk metrics from perfData
-  const rets = dailyReturns(perfData);
-  const maxDD = perfData.length >= 2 ? maxDrawdownPct(perfData) : null;
+  const rets = dailyReturns(cleanPerf);
+  const maxDD = cleanPerf.length >= 2 ? maxDrawdownPct(cleanPerf) : null;
   const sharpe = sharpeRatio(rets);
   // Annualized volatility = weighted average of holdings' ticker σ.
   const volPct = weightedAnnVol(positions, barsData);
 
   // Time-weighted (IBKR-style) total return and combined P&L.
-  const twrReturnPct = twrTotalReturnPct(perfData);
+  const twrReturnPct = twrTotalReturnPct(cleanPerf);
   const totalPnl = (realizedPnl ?? 0) + unrealizedPnl;
 
   // Top mover by abs day gain %
@@ -137,52 +142,44 @@ export default function OverviewPage({
   // Allocation
   const totalMV = positions.reduce((s, p) => s + (p.market_value ?? 0), 0) || 1;
 
-  // Performance chart — time-weighted index to 100 from start (IBKR-style),
-  // so deposits/withdrawals don't show up as performance.
-  const indexed = twrIndex(perfData);
+  // ── Trailing-Twelve-Month total-return chart (IBKR "performance %" style) ──
+  // Time-weighted cumulative return rebased to 0% at the window open, so
+  // deposits/withdrawals never show up as performance. Benchmarked against the
+  // S&P 500 (SPY) and Nasdaq-100 (QQQ) over the same window.
+  const ttmPerf = trailingMonths(cleanPerf, 12);
+  const ttmIndex = twrIndex(ttmPerf);
+  const ttmBase = ttmIndex.length > 0 ? ttmIndex[0] : 0;
+  const indexed = ttmIndex.map((v) => (ttmBase > 0 ? (v / ttmBase - 1) * 100 : 0));
 
-  // Real benchmark lines: index SPY, AGG from the same start date as perfData
-  const perfStartDate = perfData.length > 0 ? perfData[0].timestamp.slice(0, 10) : "";
   const spyBars = barsData["SPY"] ?? [];
-  const aggBars = barsData["AGG"] ?? [];
-  const iefBars = barsData["IEF"] ?? [];
+  const qqqBars = barsData["QQQ"] ?? [];
 
-  // For each perfData date, find the nearest benchmark bar value
-  function benchAtDate(bars: { date: string; value: number }[], date: string): number | null {
-    if (bars.length === 0) return null;
-    const exact = bars.find((b) => b.date === date);
-    if (exact) return exact.value;
-    // Find closest before or equal
-    let best: { date: string; value: number } | null = null;
-    for (const b of bars) {
-      if (b.date <= date) best = b;
-      else break;
-    }
-    return best?.value ?? null;
-  }
+  const windowStart = ttmPerf.length > 0 ? ttmPerf[0].timestamp.slice(0, 10) : "";
+  const spyBaseClose = windowStart ? barValueOnOrBefore(spyBars, windowStart) : null;
+  const qqqBaseClose = windowStart ? barValueOnOrBefore(qqqBars, windowStart) : null;
 
-  const indexedSpyBars = perfStartDate ? indexBars(spyBars, perfStartDate) : [];
-  const indexedAggBars = perfStartDate ? indexBars(aggBars, perfStartDate) : [];
-  const indexedIefBars = perfStartDate ? indexBars(iefBars, perfStartDate) : [];
-
-  // Construct 60/40 = 0.6*SPY + 0.4*AGG indexed from same start
-  const labels = perfData.map((d) => {
-    const dt = new Date(d.timestamp);
-    return dt.toLocaleDateString("en-US", { month: "short", year: "2-digit" });
+  const labels = ttmPerf.map((d) => {
+    const [y, m, day] = d.timestamp.slice(0, 10).split("-").map(Number);
+    return new Date(Date.UTC(y, m - 1, day)).toLocaleDateString("en-US", {
+      month: "short",
+      year: "2-digit",
+      timeZone: "UTC",
+    });
   });
 
-  const benchSPY = perfData.map((d) => benchAtDate(indexedSpyBars, d.timestamp.slice(0, 10)));
-  const benchAGG = perfData.map((d) => benchAtDate(indexedAggBars, d.timestamp.slice(0, 10)));
-  const benchIEF = perfData.map((d) => benchAtDate(indexedIefBars, d.timestamp.slice(0, 10)));
-  const bench6040 = benchSPY.map((spy, i) => {
-    const agg = benchAGG[i];
-    if (spy == null || agg == null) return null;
-    return 0.6 * spy + 0.4 * agg;
-  });
+  // Each benchmark as cumulative % from the window open, forward-filled by date.
+  const benchPct = (bars: typeof spyBars, base: number | null) =>
+    ttmPerf.map((d) => {
+      if (base == null || base <= 0) return null;
+      const c = barValueOnOrBefore(bars, d.timestamp.slice(0, 10));
+      return c != null ? (c / base - 1) * 100 : null;
+    });
+  const benchSPY = benchPct(spyBars, spyBaseClose);
+  const benchQQQ = benchPct(qqqBars, qqqBaseClose);
 
-  const hasBenchmarks = indexedSpyBars.length > 0;
+  const hasBenchmarks = spyBars.length > 0 || qqqBars.length > 0;
 
-  const portReturn = (twrTotalReturnPct(perfData) ?? 0).toFixed(1);
+  const portReturn = (indexed.length > 0 ? indexed[indexed.length - 1] : 0).toFixed(1);
 
   // Allocation by category buckets
   const allocationBuckets = (() => {
@@ -229,7 +226,7 @@ export default function OverviewPage({
     labels,
     datasets: [
       {
-        label: `Portfolio +${portReturn}%`,
+        label: `Portfolio ${Number(portReturn) >= 0 ? "+" : ""}${portReturn}%`,
         data: indexed,
         borderColor: "#1A1611",
         backgroundColor: "transparent",
@@ -239,18 +236,7 @@ export default function OverviewPage({
       },
       ...(hasBenchmarks ? [
         {
-          label: "60/40 (SPY+AGG)",
-          data: bench6040,
-          borderColor: "#6B6158",
-          backgroundColor: "transparent",
-          borderWidth: 1.2,
-          borderDash: [4, 3],
-          tension: 0.3,
-          pointRadius: 0,
-          spanGaps: true,
-        },
-        {
-          label: "SPY",
+          label: "S&P 500 (SPY)",
           data: benchSPY,
           borderColor: "#9B9088",
           backgroundColor: "transparent",
@@ -261,23 +247,12 @@ export default function OverviewPage({
           spanGaps: true,
         },
         {
-          label: "AGG",
-          data: benchAGG,
-          borderColor: "#B8860B",
+          label: "Nasdaq-100 (QQQ)",
+          data: benchQQQ,
+          borderColor: "#3D5A8A",
           backgroundColor: "transparent",
           borderWidth: 1.2,
           borderDash: [4, 3],
-          tension: 0.3,
-          pointRadius: 0,
-          spanGaps: true,
-        },
-        {
-          label: "IEF",
-          data: benchIEF,
-          borderColor: "#5B7A6B",
-          backgroundColor: "transparent",
-          borderWidth: 1.0,
-          borderDash: [2, 4],
           tension: 0.3,
           pointRadius: 0,
           spanGaps: true,
@@ -312,7 +287,7 @@ export default function OverviewPage({
         bodyColor: "#6B6158",
         callbacks: {
           label: (ctx: { dataset: { label?: string }; parsed: { y: number } }) =>
-            ` ${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)}`,
+            ` ${ctx.dataset.label}: ${ctx.parsed.y >= 0 ? "+" : ""}${ctx.parsed.y.toFixed(2)}%`,
         },
       },
     },
@@ -323,7 +298,11 @@ export default function OverviewPage({
         border: { color: "#D8CFBF" },
       },
       y: {
-        ticks: { color: "#9B9088", font: { size: 10 } },
+        ticks: {
+          color: "#9B9088",
+          font: { size: 10 },
+          callback: (v: string | number) => `${Number(v) >= 0 ? "+" : ""}${Number(v).toFixed(0)}%`,
+        },
         grid: { color: "#EDE5D6", lineWidth: 0.5 },
         border: { color: "#D8CFBF" },
       },
@@ -455,13 +434,13 @@ export default function OverviewPage({
       {/* ── §01 Performance chart ──────────────────────────────── */}
       <SectionHeader
         num="01"
-        title="Trailing Twelve Months — Total Return Indexed"
-        right={`Base = 100 · ${new Date().toLocaleDateString("en-US", { day: "numeric", month: "short", year: "numeric" })}`}
+        title="Trailing Twelve Months — Total Return (Time-Weighted %)"
+        right={`vs S&P 500 · Nasdaq-100 · ${new Date().toLocaleDateString("en-US", { day: "numeric", month: "short", year: "numeric" })}`}
       />
       <div className="bg-card-bg border border-parchment-border rounded" style={{ height: 260 }}>
-        {perfData.length < 2 ? (
+        {ttmPerf.length < 2 ? (
           <div className="flex items-center justify-center h-full">
-            <p className="text-ink-4 text-sm">No performance history yet — prices update every 60s.</p>
+            <p className="text-ink-4 text-sm">No performance history yet — prices update live while the market is open.</p>
           </div>
         ) : (
           <Line data={chartData} options={chartOptions} />

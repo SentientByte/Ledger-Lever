@@ -383,9 +383,12 @@ pub fn get_transaction_summary(state: tauri::State<'_, AppState>) -> Result<Tran
                 .map(|p| cp.quantity * p - cp.cost_basis)
         }).sum())
     };
+    // "Invested" is the net capital actually deployed (buys − sell proceeds),
+    // which reconciles with Total P&L = Market Value − Net Invested.
+    let net_invested = crud::get_net_invested(&conn).unwrap_or(m.total_invested);
     Ok(TransactionSummary {
         fills: m.fills,
-        invested: r2(m.total_invested),
+        invested: r2(net_invested),
         realized: r2(m.realized_pnl),
         unrealized: unrealized.map(r2),
         active_positions: m.active_positions,

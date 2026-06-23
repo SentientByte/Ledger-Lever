@@ -20,7 +20,9 @@ import {
   dailyReturns,
   maxDrawdownPct,
   sharpeRatio,
-  annualizedVol,
+  weightedAnnVol,
+  twrIndex,
+  twrTotalReturnPct,
   indexBars,
 } from "../utils/stats";
 
@@ -120,7 +122,12 @@ export default function OverviewPage({
   const rets = dailyReturns(perfData);
   const maxDD = perfData.length >= 2 ? maxDrawdownPct(perfData) : null;
   const sharpe = sharpeRatio(rets);
-  const volPct = annualizedVol(rets);
+  // Annualized volatility = weighted average of holdings' ticker σ.
+  const volPct = weightedAnnVol(positions, barsData);
+
+  // Time-weighted (IBKR-style) total return and combined P&L.
+  const twrReturnPct = twrTotalReturnPct(perfData);
+  const totalPnl = (realizedPnl ?? 0) + unrealizedPnl;
 
   // Top mover by abs day gain %
   const topMover = [...positions].sort(
@@ -130,9 +137,9 @@ export default function OverviewPage({
   // Allocation
   const totalMV = positions.reduce((s, p) => s + (p.market_value ?? 0), 0) || 1;
 
-  // Performance chart — index to 100 from start
-  const baseVal = perfData.length > 0 ? perfData[0].total_value : 1;
-  const indexed = perfData.map((d) => ((d.total_value / baseVal) * 100));
+  // Performance chart — time-weighted index to 100 from start (IBKR-style),
+  // so deposits/withdrawals don't show up as performance.
+  const indexed = twrIndex(perfData);
 
   // Real benchmark lines: index SPY, AGG from the same start date as perfData
   const perfStartDate = perfData.length > 0 ? perfData[0].timestamp.slice(0, 10) : "";
@@ -175,9 +182,7 @@ export default function OverviewPage({
 
   const hasBenchmarks = indexedSpyBars.length > 0;
 
-  const portReturn = perfData.length > 1
-    ? (((perfData[perfData.length - 1].total_value / perfData[0].total_value) - 1) * 100).toFixed(1)
-    : "0.0";
+  const portReturn = (twrTotalReturnPct(perfData) ?? 0).toFixed(1);
 
   // Allocation by category buckets
   const allocationBuckets = (() => {
@@ -321,7 +326,6 @@ export default function OverviewPage({
         ticks: { color: "#9B9088", font: { size: 10 } },
         grid: { color: "#EDE5D6", lineWidth: 0.5 },
         border: { color: "#D8CFBF" },
-        min: 90,
       },
     },
   };
@@ -374,11 +378,11 @@ export default function OverviewPage({
           {/* Total return */}
           <div>
             <p className="section-label mb-1">Total Return</p>
-            <span className={`font-sans font-semibold text-3xl ${totalGainPct >= 0 ? "pos" : "neg"}`}>
-              {sign(totalGainPct)}{fmt(totalGainPct)}%
+            <span className={`font-sans font-semibold text-3xl ${(twrReturnPct ?? 0) >= 0 ? "pos" : "neg"}`}>
+              {twrReturnPct !== null ? `${sign(twrReturnPct)}${fmt(twrReturnPct)}%` : "—"}
             </span>
             <p className="text-ink-4 text-xs mt-0.5">
-              {sign(totalGain)}${fmt(Math.abs(totalGain))} on ${fmt(totalCost)} cost basis
+              {sign(totalPnl)}${fmt(Math.abs(totalPnl))} total P&amp;L · time-weighted
             </p>
           </div>
         </div>
@@ -413,7 +417,7 @@ export default function OverviewPage({
         <MetricTile
           label="Total Invested"
           value={`$${fmt(totalInvested)}`}
-          sub="Cost basis incl. commissions"
+          sub="Net capital deployed · incl. commissions"
         />
       </div>
 

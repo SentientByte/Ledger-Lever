@@ -1,4 +1,5 @@
 import logging
+import random
 import time
 from collections import deque
 from datetime import datetime, timedelta, time as dt_time
@@ -13,9 +14,13 @@ from .yfinance_service import get_current_prices, get_ticker_names, get_historic
 logger = logging.getLogger(__name__)
 _scheduler = BackgroundScheduler(timezone="UTC")
 
-_PRICE_BATCH_SIZE = 8   # symbols per yfinance batch
-_BATCH_DELAY_S = 2.0    # seconds between batches to avoid rate-limiting
-_TICKER_DELAY_S = 1.5   # seconds between individual ticker requests within a batch
+_PRICE_BATCH_SIZE = 4      # symbols per yfinance batch
+_BATCH_DELAY_LO = 8.0      # random inter-batch delay lower bound (seconds)
+_BATCH_DELAY_HI = 12.0     # random inter-batch delay upper bound (seconds)
+_TICKER_DELAY_LO = 5.0     # random inter-ticker delay lower bound (seconds)
+_TICKER_DELAY_HI = 8.0     # random inter-ticker delay upper bound (seconds)
+_BACKFILL_DELAY_LO = 6.0   # random inter-symbol delay lower bound (seconds)
+_BACKFILL_DELAY_HI = 10.0  # random inter-symbol delay upper bound (seconds)
 
 
 def refresh_prices() -> None:
@@ -48,7 +53,7 @@ def refresh_prices() -> None:
             prices = get_current_prices(batch, batch_exch)
             all_prices.update(prices)
             if i + _PRICE_BATCH_SIZE < len(all_symbols):
-                time.sleep(_BATCH_DELAY_S)
+                time.sleep(random.uniform(_BATCH_DELAY_LO, _BATCH_DELAY_HI))
 
         # Persist price snapshots
         names_to_update: dict = {}
@@ -132,7 +137,7 @@ def backfill_historical_data() -> None:
                     logger.info("Backfill: stored %d bars for %s", count, symbol)
                 else:
                     logger.warning("Backfill: no historical bars returned for %s", symbol)
-                time.sleep(2.0)  # avoid Yahoo Finance rate limits between symbols
+                time.sleep(random.uniform(_BACKFILL_DELAY_LO, _BACKFILL_DELAY_HI))
 
         # ── Step 2: pre-load all cached prices into memory ────────────────────
         all_hist: dict = {}  # {symbol: {date: close_price}}

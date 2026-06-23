@@ -1,10 +1,20 @@
 import logging
+import random
 import time
 from typing import Dict, List, Optional
 
 import yfinance as yf
 
 logger = logging.getLogger(__name__)
+
+# yfinance logs "$TICKER: possibly delisted; no timezone found" at ERROR level
+# whenever Yahoo Finance returns an empty body (usually a transient rate-limit,
+# not an actual delisting).  Suppress it so it doesn't pollute the log file.
+class _SuppressDelistNoise(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "possibly delisted" not in record.getMessage()
+
+logging.getLogger("yfinance").addFilter(_SuppressDelistNoise())
 
 # stooq uses its own suffix scheme, different from yfinance
 _STOOQ_SUFFIX: Dict[str, str] = {
@@ -124,7 +134,7 @@ def get_current_prices(
     tickers = list(yf_ticker_to_sym.items())
     for idx, (yf_ticker, sym) in enumerate(tickers):
         if idx > 0:
-            time.sleep(1.5)
+            time.sleep(random.uniform(5.0, 8.0))
         for attempt in range(3):
             try:
                 ticker = yf.Ticker(yf_ticker)
@@ -144,6 +154,14 @@ def get_current_prices(
                     except Exception:
                         pass
 
+                if price is None:
+                    # yfinance returned no price — try stooq before giving up
+                    exchange = exch_map.get(sym)
+                    stooq_price = _get_current_price_stooq(sym, exchange)
+                    if stooq_price is not None:
+                        logger.info("stooq current-price fallback succeeded for %s: %.4f", sym, stooq_price)
+                        price = stooq_price
+
                 result[sym] = {
                     "price": float(price) if price is not None else None,
                     "prev_close": float(prev_close) if prev_close is not None else None,
@@ -161,9 +179,33 @@ def get_current_prices(
                     time.sleep(10 * (attempt + 1))
                     continue
                 logger.warning("Error fetching %s (%s): %s", sym, yf_ticker, exc)
+                # Try stooq as a fallback for the current price
+                exchange = exch_map.get(sym)
+                stooq_price = _get_current_price_stooq(sym, exchange)
+                if stooq_price is not None:
+                    logger.info("stooq current-price fallback succeeded for %s: %.4f", sym, stooq_price)
+                    result[sym] = {"price": stooq_price, "prev_close": None,
+                                   "day_high": None, "day_low": None,
+                                   "volume": None, "market_cap": None, "name": None}
                 break
 
     return result
+
+
+def _get_current_price_stooq(symbol: str, listing_exchange: Optional[str] = None) -> Optional[float]:
+    """Return the most recent closing price from stooq (fallback when yfinance is rate-limited)."""
+    try:
+        import pandas_datareader.data as pdr
+        from datetime import date, timedelta
+        stooq_ticker = _get_stooq_ticker(symbol, listing_exchange)
+        start = date.today() - timedelta(days=7)
+        hist = pdr.DataReader(stooq_ticker, "stooq", start=start)
+        if hist is not None and not hist.empty:
+            hist = hist.sort_index()
+            return float(hist["Close"].iloc[-1])
+    except Exception as exc:
+        logger.debug("stooq current-price fallback failed for %s: %s", symbol, exc)
+    return None
 
 
 def get_ticker_names(symbols: List[str], symbol_exchange_map: Optional[Dict[str, str]] = None) -> Dict[str, str]:
